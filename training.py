@@ -49,7 +49,7 @@ bqm_model.parse_lp("model.lp")
 # print(bqm_model.constraints_dict)
 # print(bqm_model.variables)
 # print(bqm_model.quadratic)
-Q, _ = qubo_to_torch(bqm_model, eq_inf=50, leq_infinity=100) # pre-constrained Q matrix
+Q, _ = qubo_to_torch(bqm_model, eq_inf=200, leq_infinity=200) # pre-constrained Q matrix
 
 
 
