@@ -1,9 +1,10 @@
 import torch
+import wandb
 import networkx as nx
 import torch.nn as nn
 import torch.nn.functional as F
-
-from dgl.nn.pytorch import GraphConv
+import matplotlib.pyplot as plt
+from dgl.nn.pytorch import GraphConv, SAGEConv
 from itertools import chain, islice
 from time import time
 
@@ -26,6 +27,48 @@ class GCN_dev(nn.Module):
         self.dropout_frac = dropout
         self.conv1 = GraphConv(in_feats, hidden_size).to(device)
         self.conv2 = GraphConv(hidden_size, number_classes).to(device)
+
+    def forward(self, g, inputs):
+        """
+        Run forward propagation step of instantiated model.
+
+        Input:
+            self: GCN_dev instance
+            g: DGL graph object, i.e. problem definition
+            inputs: Input (embedding) layer weights, to be propagated through network
+        Output:
+            h: Output layer weights
+        """
+
+        # input step
+        h = self.conv1(g, inputs)
+        h = torch.relu(h)
+        h = F.dropout(h, p=self.dropout_frac)
+
+        # output step
+        h = self.conv2(g, h)
+        h = torch.sigmoid(h)
+
+        return h
+
+# GNN class to be instantiated with specified param values
+class GraphSAGE_dev(nn.Module):
+    def __init__(self, in_feats, hidden_size, aggregator, number_classes, dropout, device):
+        """
+        Initialize a new instance of the core GCN model of provided size.
+        Dropout is added in forward step.
+
+        Inputs:
+            in_feats: Dimension of the input (embedding) layer
+            hidden_size: Hidden layer size
+            dropout: Fraction of dropout to add between intermediate layer. Value is cached for later use.
+            device: Specifies device (CPU vs GPU) to load variables onto
+        """
+        super(GraphSAGE_dev, self).__init__()
+
+        self.dropout_frac = dropout
+        self.conv1 = SAGEConv(in_feats, hidden_size, aggregator).to(device)
+        self.conv2 = SAGEConv(hidden_size, number_classes, aggregator).to(device)
 
     def forward(self, g, inputs):
         """
@@ -126,7 +169,7 @@ def gen_combinations(combs, chunk_size):
 
 
 # helper function for custom loss according to Q matrix
-def loss_func(probs, Q_mat):
+def loss_func(probs, Qunc, C1, C2, offset):
     """
     Function to compute cost value for given probability of spin [prob(+1)] and predefined Q matrix.
 
@@ -138,13 +181,15 @@ def loss_func(probs, Q_mat):
     probs_ = torch.unsqueeze(probs, 1)
 
     # minimize cost = x.T * Q * x
-    cost = (probs_.T @ Q_mat @ probs_).squeeze()
-
-    return cost
+    total_loss = (probs_.T @ Qunc @ probs_).squeeze() + (probs_.T @ C1 @ probs_).squeeze() + (probs_.T @ C2 @ probs_).squeeze() + offset
+    uncon_loss = (probs_.T @ Qunc @ probs_).squeeze()
+    C1_loss = (probs_.T @ C1 @ probs_).squeeze()
+    C2_loss = (probs_.T @ C2 @ probs_).squeeze() + offset
+    return total_loss, uncon_loss, C1_loss, C2_loss
 
 
 # Construct graph to learn on
-def get_gnn(n_nodes, gnn_hypers, opt_params, torch_device, torch_dtype):
+def get_gnn(n_nodes, graph_encoder, gnn_hypers, opt_params, scheduler_bool, torch_device, torch_dtype):
     """
     Generate GNN instance with specified structure. Creates GNN, retrieves embedding layer,
     and instantiates ADAM optimizer given those.
@@ -164,21 +209,33 @@ def get_gnn(n_nodes, gnn_hypers, opt_params, torch_device, torch_dtype):
     hidden_dim = gnn_hypers['hidden_dim']
     dropout = gnn_hypers['dropout']
     number_classes = gnn_hypers['number_classes']
-
+    weight_decay = opt_params['weight_decay']
     # instantiate the GNN
-    net = GCN_dev(dim_embedding, hidden_dim, number_classes, dropout, torch_device)
+    if graph_encoder == 'GCN':
+        net = GCN_dev(dim_embedding, hidden_dim, number_classes, dropout, torch_device)
+    elif graph_encoder == 'GraphSAGE':
+        aggregator = 'pool'
+        wandb.config.aggregator = aggregator
+        net = GraphSAGE_dev(dim_embedding, hidden_dim, aggregator, number_classes, dropout, torch_device)
     net = net.type(torch_dtype).to(torch_device)
     embed = nn.Embedding(n_nodes, dim_embedding)
     embed = embed.type(torch_dtype).to(torch_device)
 
     # set up Adam optimizer
     params = chain(net.parameters(), embed.parameters())
-    optimizer = torch.optim.Adam(params, **opt_params)
-    return net, embed, optimizer
+    if weight_decay is not None:
+        optimizer = torch.optim.AdamW(params, **opt_params)
+    else:
+        optimizer = torch.optim.Adam(params, **opt_params)
+    if scheduler_bool:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10)
+    else:
+        scheduler = None
+    return net, embed, optimizer, scheduler
 
 
 # Parent function to run GNN training given input config
-def run_gnn_training(q_torch, dgl_graph, net, embed, optimizer, number_epochs, tol, patience, prob_threshold):
+def run_gnn_training(Qunc, C1, C2, offset, dgl_graph, net, embed, optimizer, scheduler, number_epochs, tol, patience, prob_threshold):
     """
     Wrapper function to run and monitor GNN training. Includes early stopping.
     """
@@ -187,23 +244,37 @@ def run_gnn_training(q_torch, dgl_graph, net, embed, optimizer, number_epochs, t
 
     prev_loss = 1.  # initial loss value (arbitrary)
     count = 0       # track number times early stopping is triggered
-
     # initialize optimal solution
-    best_bitstring = torch.zeros((dgl_graph.number_of_nodes(),)).type(q_torch.dtype).to(q_torch.device)
-    best_loss = loss_func(best_bitstring.float(), q_torch)
+    best_bitstring = torch.zeros((dgl_graph.number_of_nodes(),)).type(Qunc.dtype).to(Qunc.device)
+    best_loss, best_uncon_loss, best_C1_loss, best_C2_loss = loss_func(best_bitstring.float(), Qunc, C1, C2, offset)
 
     t_gnn_start = time()
-
+    loss_ = []
+    uncon_loss_ = []
+    LEQ_loss_ = []
+    EQ_loss_ = []
+    # b = torch.tensor([1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1], dtype= torch.float32, requires_grad=True)
+    # probs = torch.randint(0, 2, (inputs.shape[0],), dtype= torch.float32, requires_grad=True)
     # Training logic
+    lrs = []
+    print(f'Offset: {offset}')
     for epoch in range(number_epochs):
 
         # get logits/activations
+        # if epoch > 0:
         probs = net(dgl_graph, inputs)[:, 0]  # collapse extra dimension output from model
-
         # build cost value with QUBO cost function
-        loss = loss_func(probs, q_torch)
-        loss_ = loss.detach().item()
-
+        loss, uncon_loss, LEQ_loss, EQ_loss = loss_func(probs, Qunc, C1, C2, offset)
+        wandb.log({"Total loss": loss.detach().item()})
+        wandb.log({"Unconstrained loss": uncon_loss.detach().item()})
+        wandb.log({"LEQ loss": LEQ_loss.detach().item()})
+        wandb.log({"EQ loss": EQ_loss.detach().item()})
+        wandb.log({"learning rate": optimizer.param_groups[0]["lr"]})
+        # loss_ = loss.detach().item()
+        loss_.append(loss.detach().item())
+        uncon_loss_.append(uncon_loss.detach().item())
+        LEQ_loss_.append(LEQ_loss.detach().item())
+        EQ_loss_.append(EQ_loss.detach().item())
         # Apply projection
         bitstring = (probs.detach() >= prob_threshold) * 1
         if loss < best_loss:
@@ -211,30 +282,38 @@ def run_gnn_training(q_torch, dgl_graph, net, embed, optimizer, number_epochs, t
             best_bitstring = bitstring
 
         if epoch % 1000 == 0:
-            print(f'Epoch: {epoch}, Loss: {loss_}')
-
+            print(f'Epoch: {epoch}, Total Loss: {loss_[epoch]}, Unconstrained Loss: {uncon_loss_[epoch]}, LEQ loss: {LEQ_loss_[epoch]}, EQ loss: {EQ_loss_[epoch]}')
         # early stopping check
         # If loss increases or change in loss is too small, trigger
-        if (abs(loss_ - prev_loss) <= tol) | ((loss_ - prev_loss) > 0):
+        if (abs(loss_[epoch] - prev_loss) <= tol) | ((loss_[epoch] - prev_loss) > 0):
             count += 1
         else:
             count = 0
-
+        # if (abs(loss_ - prev_loss) <= tol):
+        #     break
         if count >= patience:
             print(f'Stopping early on epoch {epoch} (patience: {patience})')
             break
 
         # update loss tracking
-        prev_loss = loss_
+        prev_loss = loss_[epoch]
 
         # run optimization with backpropagation
         optimizer.zero_grad()  # clear gradient for step
         loss.backward()        # calculate gradient through compute graph
         optimizer.step()       # take step, update weights
+        lrs.append(optimizer.param_groups[0]["lr"])
+        if scheduler is not None:
+            scheduler.step(loss)
 
     t_gnn = time() - t_gnn_start
+    epochs = range(0, epoch+1)
+    # plt.plot(range(epoch),lrs)
+    # plt.show()
+    # plt.plot(epochs, loss_)
+    # plt.show()
     print(f'GNN training (n={dgl_graph.number_of_nodes()}) took {round(t_gnn, 3)}')
-    print(f'GNN final continuous loss: {loss_}')
+    print(f'GNN final continuous loss: {loss_[epoch]}')
     print(f'GNN best continuous loss: {best_loss}')
 
     final_bitstring = (probs.detach() >= prob_threshold) * 1

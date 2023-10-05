@@ -24,6 +24,8 @@ class BQM:
         self.offset = 0
         self.variables = []
         self.constraints_str = []
+        self.C1 = {}
+        self.C2 = {}
 
         # constraints are kept as dict with the keys:
         # 'type' is LEQ or EQ
@@ -149,10 +151,8 @@ class BQM:
         if mult != 1:
             for k in self.quadratic:
                 self.quadratic[k] = self.quadratic[k] * mult
-
             for k in self.linear:
                 self.linear[k] = self.linear[k] * mult
-
     def parse_constraints(self):
         for constraint in self.constraints_str:
             dict_con = {}
@@ -237,8 +237,10 @@ class BQM:
                             if DEBUG:
                                 print(pair, "added", leq_infinity, "to", self.quadratic[pair])
                             self.quadratic[pair] += leq_infinity
+                            self.C1[pair] = leq_infinity
                         else:
                             self.quadratic[pair] = leq_infinity
+                            self.C1[pair] = leq_infinity
                             if DEBUG:
                                 print("Adding new quadratic term for orbits", pair)
                                 print(pair, leq_infinity)
@@ -259,9 +261,14 @@ class BQM:
                                   self.linear[vars[i][1]])
                         self.linear[vars[i][1]] = self.linear[vars[i][1]] - 2 * eq_inf * vars[i][0] * dict_con['rhs'] \
                                                   + eq_inf * vars[i][0] ** 2
+                        if self.C2.get(vars[i][1]):
+                            self.C2[vars[i][1]] = self.C2[vars[i][1]] - 2 * eq_inf * vars[i][0] * dict_con['rhs'] + eq_inf * vars[i][0] ** 2
+                        else:
+                            self.C2[vars[i][1]] = - 2 * eq_inf * vars[i][0] * dict_con['rhs'] + eq_inf * vars[i][0] ** 2
                     else:
 
                         self.linear[vars[i][1]] = -2 * eq_inf * vars[i][0] * dict_con['rhs'] + eq_inf * vars[i][0] ** 2
+                        self.C2[vars[i][1]] = -2 * eq_inf * vars[i][0] * dict_con['rhs'] + eq_inf * vars[i][0] ** 2
                         if DEBUG:
                             print(vars[i][1], f"added -2 * {eq_inf} * {vars[i][0]} * {dict_con['rhs']} + {eq_inf} * {vars[i][0]} ** 2")
                             print("Adding a new linear term for placement", vars[i][1])
@@ -275,8 +282,10 @@ class BQM:
                             if DEBUG:
                                 print(pair, f"added 2 * {eq_inf} * {vars[i][0]} * {vars[j][0]}", "to", self.quadratic[pair])
                             self.quadratic[pair] = self.quadratic[pair] + 2 * eq_inf * vars[i][0] * vars[j][0]
+                            self.C2[pair] = 2 * eq_inf * vars[i][0] * vars[j][0]
                         else:
                             self.quadratic[pair] = 2 * eq_inf * vars[i][0] * vars[j][0]
+                            self.C2[pair] = 2 * eq_inf * vars[i][0] * vars[j][0]
                             if DEBUG:
                                 print(pair, f"added 2 * {eq_inf} * {vars[i][0]} * {vars[j][0]}")
                                 print("Adding new quadratic term for placement", pair)
@@ -319,24 +328,49 @@ def qubo_to_torch(bqm_model, eq_inf, leq_infinity, torch_dtype=None, torch_devic
     Output Q matrix as torch tensor for given Q in dictionary format.
 
     """
+    bqm_model.quadratic.update(bqm_model.linear)
+    n_variables = len(bqm_model.linear.keys())
+    Qunc = torch.zeros((n_variables, n_variables))
+    elements = list(bqm_model.linear.keys())
+    for k in (bqm_model.quadratic.keys()):
+        Qcoord1 = [idx for idx, key in enumerate(elements) if key == k[0]]
+        Qcoord2 = [idx for idx, key in enumerate(elements) if key == k[1]]
+        Qunc[Qcoord1, Qcoord2] = bqm_model.quadratic[k]
+        Qdiag = [idx for idx, key in enumerate(elements) if key == k]
+        Qunc[Qdiag, Qdiag] = bqm_model.quadratic[k]
     bqm_model.parse_constraints()
     bqm_model.qubofy(eq_inf, leq_infinity)
     bqm_model.quadratic.update(bqm_model.linear)
     # get number of nodes
     n_variables = len(bqm_model.linear.keys())
     Q = torch.zeros((n_variables, n_variables))
+    C1 = torch.zeros((n_variables, n_variables))
+    C2 = torch.zeros((n_variables, n_variables))
+    elements = list(bqm_model.linear.keys())
     for k in (bqm_model.quadratic.keys()):
-        temp = list(bqm_model.linear.keys())
-        res1 = [idx for idx, key in enumerate(temp) if key == k[0]]
-        res2 = [idx for idx, key in enumerate(temp) if key == k[1]]
-        Q[res1, res2] = bqm_model.quadratic[k]
-        res = [idx for idx, key in enumerate(temp) if key == k]
-        Q[res, res] = bqm_model.quadratic[k]
-
+        Qcoord1 = [idx for idx, key in enumerate(elements) if key == k[0]]
+        Qcoord2 = [idx for idx, key in enumerate(elements) if key == k[1]]
+        Q[Qcoord1, Qcoord2] = bqm_model.quadratic[k]
+        Qdiag = [idx for idx, key in enumerate(elements) if key == k]
+        Q[Qdiag, Qdiag] = bqm_model.quadratic[k]
+    for k in (bqm_model.C1.keys()):
+        C1coord1 = [idx for idx, key in enumerate(elements) if key == k[0]]
+        C1coord2 = [idx for idx, key in enumerate(elements) if key == k[1]]
+        C1[C1coord1, C1coord2] = bqm_model.C1[k]
+        C1diag = [idx for idx, key in enumerate(elements) if key == k]
+        C1[C1diag, C1diag] = bqm_model.C1[k]
+    for k in (bqm_model.C2.keys()):
+        C2coord1 = [idx for idx, key in enumerate(elements) if key == k[0]]
+        C2coord2 = [idx for idx, key in enumerate(elements) if key == k[1]]
+        C2[C2coord1, C2coord2] = bqm_model.C2[k]
+        C2diag = [idx for idx, key in enumerate(elements) if key == k]
+        C2[C2diag, C2diag] = bqm_model.C2[k]
     if torch_dtype is not None:
         Q = Q.type(torch_dtype)
 
     if torch_device is not None:
         Q = Q.to(torch_device)
-
-    return Q, list(bqm_model.linear.keys())
+    Z = Qunc + C1 + C2
+    # print(torch.eq(Q, Z))
+    assert Q.any()==Z.any()
+    return Q, Qunc, C1, C2, list(bqm_model.linear.keys())
