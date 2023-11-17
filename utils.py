@@ -1,4 +1,4 @@
-import torch
+import torch, numpy
 import wandb
 import networkx as nx
 import torch.nn as nn
@@ -11,7 +11,7 @@ from time import time
 
 # GNN class to be instantiated with specified param values
 class GCN_dev(nn.Module):
-    def __init__(self, in_feats, hidden_size, number_classes, dropout, device):
+    def __init__(self, in_feats, hidden_size, number_classes, dropout, temperature, device):
         """
         Initialize a new instance of the core GCN model of provided size.
         Dropout is added in forward step.
@@ -27,6 +27,7 @@ class GCN_dev(nn.Module):
         self.dropout_frac = dropout
         self.conv1 = GraphConv(in_feats, hidden_size).to(device)
         self.conv2 = GraphConv(hidden_size, number_classes).to(device)
+        self.temperature_scaling = nn.Parameter(temperature*torch.ones(1)).to(device)
 
     def forward(self, g, inputs):
         """
@@ -47,13 +48,15 @@ class GCN_dev(nn.Module):
 
         # output step
         h = self.conv2(g, h)
+        h = torch.div(h, self.temperature_scaling)
         h = torch.sigmoid(h)
+
 
         return h
 
 # GNN class to be instantiated with specified param values
 class GraphSAGE_dev(nn.Module):
-    def __init__(self, in_feats, hidden_size, aggregator, number_classes, dropout, device):
+    def __init__(self, in_feats, hidden_size, aggregator, number_classes, dropout, temperature, device):
         """
         Initialize a new instance of the core GCN model of provided size.
         Dropout is added in forward step.
@@ -69,6 +72,7 @@ class GraphSAGE_dev(nn.Module):
         self.dropout_frac = dropout
         self.conv1 = SAGEConv(in_feats, hidden_size, aggregator).to(device)
         self.conv2 = SAGEConv(hidden_size, number_classes, aggregator).to(device)
+        self.temperature_scaling = nn.Parameter(temperature*torch.ones(1)).to(device)
 
     def forward(self, g, inputs):
         """
@@ -89,6 +93,7 @@ class GraphSAGE_dev(nn.Module):
 
         # output step
         h = self.conv2(g, h)
+        h = torch.div(h, self.temperature_scaling)
         h = torch.sigmoid(h)
 
         return h
@@ -96,7 +101,7 @@ class GraphSAGE_dev(nn.Module):
 
 # Generate random graph of specified size and type,
 # with specified degree (d) or edge probability (p)
-def generate_graph(n, d=None, p=None, graph_type='reg', random_seed=0):
+def generate_graph(n, d=None, p=None, Q=None, sparsity_threshold = None, graph_type='reg', random_seed=0):
     """
     Helper function to generate a NetworkX random graph of specified type,
     given specified parameters (e.g. d-regular, d=3). Must provide one of
@@ -122,6 +127,18 @@ def generate_graph(n, d=None, p=None, graph_type='reg', random_seed=0):
         nx_temp = nx.erdos_renyi_graph(n, p, seed=random_seed)
     elif graph_type == 'complete':
         nx_temp = nx.complete_graph(n=n)
+    elif graph_type == 'sparse':
+        nx_temp = nx.complete_graph(n=n)
+        means = Q.mean(dim = 1, keepdim = True)
+        stds = Q.std(dim = 1, keepdim = True)
+        #normalize Q matrix
+        normQ = (Q - means) / stds
+        #finding Q elements with low contributions
+        ind = torch.where(abs(normQ) < sparsity_threshold)
+        ind = tuple(t.cpu() for t in ind)
+        A = nx.adjacency_matrix(nx_temp).todense()
+        A[ind] = 0
+        nx_temp = nx.from_numpy_matrix(A)
     else:
         raise NotImplementedError(f'!! Graph type {graph_type} not handled !!')
 
@@ -132,6 +149,8 @@ def generate_graph(n, d=None, p=None, graph_type='reg', random_seed=0):
     nx_graph.add_nodes_from(sorted(nx_temp.nodes()))
     nx_graph.add_edges_from(nx_temp.edges)
     return nx_graph
+
+
 
 
 # helper function to convert Q dictionary to torch tensor
@@ -187,6 +206,8 @@ def loss_func(probs, Qunc, C1, C2, offset):
     C2_loss = (probs_.T @ C2 @ probs_).squeeze() + offset
     return total_loss, uncon_loss, C1_loss, C2_loss
 
+def T_scaling(logits, temperature):
+    return torch.div(logits, temperature)
 
 # Construct graph to learn on
 def get_gnn(n_nodes, graph_encoder, gnn_hypers, opt_params, scheduler_bool, torch_device, torch_dtype):
@@ -210,13 +231,13 @@ def get_gnn(n_nodes, graph_encoder, gnn_hypers, opt_params, scheduler_bool, torc
     dropout = gnn_hypers['dropout']
     number_classes = gnn_hypers['number_classes']
     weight_decay = opt_params['weight_decay']
+    temperature = gnn_hypers["temperature"]
     # instantiate the GNN
     if graph_encoder == 'GCN':
-        net = GCN_dev(dim_embedding, hidden_dim, number_classes, dropout, torch_device)
+        net = GCN_dev(dim_embedding, hidden_dim, number_classes, dropout, temperature, torch_device)
     elif graph_encoder == 'GraphSAGE':
-        aggregator = 'pool'
-        wandb.config.aggregator = aggregator
-        net = GraphSAGE_dev(dim_embedding, hidden_dim, aggregator, number_classes, dropout, torch_device)
+        aggregator = 'mean'
+        net = GraphSAGE_dev(dim_embedding, hidden_dim, aggregator, number_classes, dropout, temperature, torch_device)
     net = net.type(torch_dtype).to(torch_device)
     embed = nn.Embedding(n_nodes, dim_embedding)
     embed = embed.type(torch_dtype).to(torch_device)
@@ -228,7 +249,7 @@ def get_gnn(n_nodes, graph_encoder, gnn_hypers, opt_params, scheduler_bool, torc
     else:
         optimizer = torch.optim.Adam(params, **opt_params)
     if scheduler_bool:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50)
     else:
         scheduler = None
     return net, embed, optimizer, scheduler
@@ -253,8 +274,6 @@ def run_gnn_training(Qunc, C1, C2, offset, dgl_graph, net, embed, optimizer, sch
     uncon_loss_ = []
     LEQ_loss_ = []
     EQ_loss_ = []
-    # b = torch.tensor([1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1], dtype= torch.float32, requires_grad=True)
-    # probs = torch.randint(0, 2, (inputs.shape[0],), dtype= torch.float32, requires_grad=True)
     # Training logic
     lrs = []
     print(f'Offset: {offset}')
@@ -265,12 +284,6 @@ def run_gnn_training(Qunc, C1, C2, offset, dgl_graph, net, embed, optimizer, sch
         probs = net(dgl_graph, inputs)[:, 0]  # collapse extra dimension output from model
         # build cost value with QUBO cost function
         loss, uncon_loss, LEQ_loss, EQ_loss = loss_func(probs, Qunc, C1, C2, offset)
-        wandb.log({"Total loss": loss.detach().item()})
-        wandb.log({"Unconstrained loss": uncon_loss.detach().item()})
-        wandb.log({"LEQ loss": LEQ_loss.detach().item()})
-        wandb.log({"EQ loss": EQ_loss.detach().item()})
-        wandb.log({"learning rate": optimizer.param_groups[0]["lr"]})
-        # loss_ = loss.detach().item()
         loss_.append(loss.detach().item())
         uncon_loss_.append(uncon_loss.detach().item())
         LEQ_loss_.append(LEQ_loss.detach().item())
@@ -285,7 +298,8 @@ def run_gnn_training(Qunc, C1, C2, offset, dgl_graph, net, embed, optimizer, sch
             print(f'Epoch: {epoch}, Total Loss: {loss_[epoch]}, Unconstrained Loss: {uncon_loss_[epoch]}, LEQ loss: {LEQ_loss_[epoch]}, EQ loss: {EQ_loss_[epoch]}')
         # early stopping check
         # If loss increases or change in loss is too small, trigger
-        if (abs(loss_[epoch] - prev_loss) <= tol) | ((loss_[epoch] - prev_loss) > 0):
+        if (abs(loss_[epoch] - prev_loss) <= tol) | ((loss_[epoch] - best_loss) > 0):
+            # print(loss_[epoch], prev_loss)
             count += 1
         else:
             count = 0
@@ -307,17 +321,12 @@ def run_gnn_training(Qunc, C1, C2, offset, dgl_graph, net, embed, optimizer, sch
             scheduler.step(loss)
 
     t_gnn = time() - t_gnn_start
-    epochs = range(0, epoch+1)
-    # plt.plot(range(epoch),lrs)
-    # plt.show()
-    # plt.plot(epochs, loss_)
-    # plt.show()
     print(f'GNN training (n={dgl_graph.number_of_nodes()}) took {round(t_gnn, 3)}')
     print(f'GNN final continuous loss: {loss_[epoch]}')
     print(f'GNN best continuous loss: {best_loss}')
 
     final_bitstring = (probs.detach() >= prob_threshold) * 1
-
+    # wandb.run.summary["best_loss"] = best_loss
     return net, epoch, final_bitstring, best_bitstring
 
 

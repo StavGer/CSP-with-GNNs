@@ -13,19 +13,22 @@ import torch, numpy
 DEBUG = False
 
 
-class BQM:
+class BQM():
 
     p_ion = re.compile(r'(?P<specie>\S+)_(?P<pos>\d+)')
     p_rhs = re.compile(r'(=|<=)\s*(?P<int>\d+)')
 
-    def __init__(self):
+    def __init__(self, Potts : bool, Gumbel_sinkhorn: bool):
         self.linear = {}
         self.quadratic = {}
         self.offset = 0
+        self.minimum_energy = 0.0
         self.variables = []
         self.constraints_str = []
         self.C1 = {}
         self.C2 = {}
+        self.Potts = Potts
+        self.Gumber_sinkhorn = Gumbel_sinkhorn
 
         # constraints are kept as dict with the keys:
         # 'type' is LEQ or EQ
@@ -49,7 +52,10 @@ class BQM:
         with open(filename) as f:
 
             line = ""
-
+            while not line.startswith("\ Model Ion"):
+                line = f.readline()
+            line = f.readline()
+            self.minimum_energy = float(line.split()[-1])
             # Skipping the beginning till the object function
             while not line.startswith("Minimize"):
                 line = f.readline()
@@ -144,7 +150,7 @@ class BQM:
             if len(self.constraints_str) > 1:
                 self.constraints_str = self.constraints_str[1:]
 
-            print(len(self.variables), "Variables in the binary program")
+            # print(len(self.variables), "Variables in the binary program")
             # print(self.constraints_str[0:4])
             # print(self.constraints_str[-2:])
 
@@ -221,29 +227,30 @@ class BQM:
 
         for dict_con in self.constraints_dict:
             if dict_con['type'] == 'LEQ':
+                if not self.Potts:
 
-                if DEBUG:
-                    print("=====================", dict_con)
+                    if DEBUG:
+                        print("=====================", dict_con)
 
-                # I know, you'd forget
-                if dict_con['rhs'] != 1:
-                    print("Encountered unsupported constraint! Treating RHS as 1")
+                    # I know, you'd forget
+                    if dict_con['rhs'] != 1:
+                        print("Encountered unsupported constraint! Treating RHS as 1")
 
-                N = len(dict_con['lhs'])
-                for i in range(N):
-                    for j in range(i + 1, N):
-                        pair = BQM.order(dict_con['lhs'][i][1], dict_con['lhs'][j][1])
-                        if pair in self.quadratic:
-                            if DEBUG:
-                                print(pair, "added", leq_infinity, "to", self.quadratic[pair])
-                            self.quadratic[pair] += leq_infinity
-                            self.C1[pair] = leq_infinity
-                        else:
-                            self.quadratic[pair] = leq_infinity
-                            self.C1[pair] = leq_infinity
-                            if DEBUG:
-                                print("Adding new quadratic term for orbits", pair)
-                                print(pair, leq_infinity)
+                    N = len(dict_con['lhs'])
+                    for i in range(N):
+                        for j in range(i + 1, N):
+                            pair = BQM.order(dict_con['lhs'][i][1], dict_con['lhs'][j][1])
+                            if pair in self.quadratic:
+                                if DEBUG:
+                                    print(pair, "added", leq_infinity, "to", self.quadratic[pair])
+                                self.quadratic[pair] += leq_infinity
+                                self.C1[pair] = leq_infinity
+                            else:
+                                self.quadratic[pair] = leq_infinity
+                                self.C1[pair] = leq_infinity
+                                if DEBUG:
+                                    print("Adding new quadratic term for orbits", pair)
+                                    print(pair, leq_infinity)
             elif dict_con['type'] == 'EQ':
                 if DEBUG:
                     print("=====================", dict_con)
@@ -323,15 +330,23 @@ class BQM:
             return t1, t2
 
 
-def qubo_to_torch(bqm_model, eq_inf, leq_infinity, torch_dtype=None, torch_device=None):
+def qubo_to_torch(bqm_model, eq_inf, leq_infinity, with_void = False, Gumbel_sinkhorn = False, torch_dtype=None, torch_device=None):
     """
     Output Q matrix as torch tensor for given Q in dictionary format.
 
     """
     bqm_model.quadratic.update(bqm_model.linear)
-    n_variables = len(bqm_model.linear.keys())
+    n_variables = len(bqm_model.linear.keys()) # without void
     Qunc = torch.zeros((n_variables, n_variables))
     elements = list(bqm_model.linear.keys())
+    n_atoms = 0
+    for i in range(len(elements)):
+        if elements[i][-1] == 0:
+            n_atoms += 1
+        else:
+            break
+    num_positions = int(n_variables / n_atoms)
+    n_total_variables = int((n_atoms + 1) * num_positions) # with void
     for k in (bqm_model.quadratic.keys()):
         Qcoord1 = [idx for idx, key in enumerate(elements) if key == k[0]]
         Qcoord2 = [idx for idx, key in enumerate(elements) if key == k[1]]
@@ -339,8 +354,9 @@ def qubo_to_torch(bqm_model, eq_inf, leq_infinity, torch_dtype=None, torch_devic
         Qdiag = [idx for idx, key in enumerate(elements) if key == k]
         Qunc[Qdiag, Qdiag] = bqm_model.quadratic[k]
     bqm_model.parse_constraints()
-    bqm_model.qubofy(eq_inf, leq_infinity)
-    bqm_model.quadratic.update(bqm_model.linear)
+    if not Gumbel_sinkhorn:
+        bqm_model.qubofy(eq_inf, leq_infinity)
+        bqm_model.quadratic.update(bqm_model.linear)
     # get number of nodes
     n_variables = len(bqm_model.linear.keys())
     Q = torch.zeros((n_variables, n_variables))
@@ -365,12 +381,58 @@ def qubo_to_torch(bqm_model, eq_inf, leq_infinity, torch_dtype=None, torch_devic
         C2[C2coord1, C2coord2] = bqm_model.C2[k]
         C2diag = [idx for idx, key in enumerate(elements) if key == k]
         C2[C2diag, C2diag] = bqm_model.C2[k]
+    Q_with_void = [[0]*n_total_variables]*n_total_variables
+    Qunc_with_void = [[0]*n_total_variables]*n_total_variables
+    C1_with_void = [[0]*n_total_variables]*n_total_variables
+    C2_with_void = [[0]*n_total_variables]*n_total_variables
+    c = 0
+    for i in range(n_total_variables):
+        if i in range(n_atoms, n_total_variables, n_atoms + 1) :
+            # row corresponding to void
+            c += 1
+        else:
+            Q_with_void[i] = [Q[i-c, j] for j in range(n_variables)]
+            [Q_with_void[i].insert(j, 0) for j in range(n_atoms, n_total_variables, n_atoms + 1)] # add 0s to columns for void
+            Qunc_with_void[i] = [Qunc[i-c, j] for j in range(n_variables)]
+            [Qunc_with_void[i].insert(j, 0) for j in range(n_atoms, n_total_variables, n_atoms + 1)] # add 0s to columns for void
+            C1_with_void[i] = [C1[i-c, j] for j in range(n_variables)]
+            [C1_with_void[i].insert(j, 0) for j in range(n_atoms, n_total_variables, n_atoms + 1)] # add 0s to columns for void
+            C2_with_void[i] = [C2[i-c, j] for j in range(n_variables)]
+            [C2_with_void[i].insert(j, 0) for j in range(n_atoms, n_total_variables, n_atoms + 1)] # add 0s to columns for void
+    Q_with_void = torch.tensor(Q_with_void)
+    Qunc_with_void = torch.tensor(Qunc_with_void)
+    C1_with_void = torch.tensor(C1_with_void)
+    C2_with_void = torch.tensor(C2_with_void)
     if torch_dtype is not None:
         Q = Q.type(torch_dtype)
-
+        Q_with_void = Q_with_void.type(torch_dtype)
+        Qunc = Qunc.type(torch_dtype)
+        Qunc_with_void = Qunc_with_void.type(torch_dtype)
+        C1 = C1.type(torch_dtype)
+        C1_with_void = C1_with_void.type(torch_dtype)
+        C2 = C2.type(torch_dtype)
+        C2_with_void = C2_with_void.type(torch_dtype)
     if torch_device is not None:
         Q = Q.to(torch_device)
+        Q_with_void = Q_with_void.to(torch_device)
+        Qunc = Qunc.to(torch_device)
+        Qunc_with_void = Qunc_with_void.to(torch_device)
+        C1 = C1.to(torch_device)
+        C1_with_void = C1_with_void.to(torch_device)
+        C2 = C2.to(torch_device)
+        C2_with_void = C2_with_void.to(torch_device)
+    Z_with_void = Qunc_with_void + C1_with_void + C2_with_void
     Z = Qunc + C1 + C2
-    # print(torch.eq(Q, Z))
     assert Q.any()==Z.any()
-    return Q, Qunc, C1, C2, list(bqm_model.linear.keys())
+    assert Q_with_void.any()==Z_with_void.any()
+    eq_const = [] # values for stoichiometry constraints
+    for i in range(1, len(bqm_model.constraints_dict)):
+        if bqm_model.constraints_dict[i]['type'] == 'EQ':
+            eq_const.append(bqm_model.constraints_dict[i]['rhs'])
+    stoich_const = torch.tensor(eq_const, dtype = Q.dtype, device = Q.get_device())
+    if with_void:
+        eq_const.append(num_positions - sum(eq_const)) if num_positions - sum(eq_const) else eq_const.append(1e-10) # number of positions assigned to void
+        stoich_const = torch.tensor(eq_const, dtype = Q.dtype, device = Q.get_device())
+        return Q_with_void, elements, n_atoms, stoich_const
+    else:
+        return Q, elements, n_atoms, stoich_const
