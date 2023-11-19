@@ -43,7 +43,7 @@ tol = 1e-3         # loss must change by more than tol, or trigger
 Gumbel_sinkhorn = True
 # Set up problem to solve
 bqm_model = BQM(Potts = True, Gumbel_sinkhorn=Gumbel_sinkhorn)
-file_to_parse = 'SrTiO3G2.lp'
+file_to_parse = 'SrTiO3G4.lp'
 # bqm_model.parse_lp("instances/SrO.lp")
 bqm_model.parse_lp("instances/" + file_to_parse)
 with_void = True
@@ -96,7 +96,7 @@ def model_step(hypers, Q, bqm_model, graph_dgl, torch_device, torch_dtype):
     print('Running GNN...')
     total_final_loss = 0
     total_best_loss = 0
-    for seed_value in range(1):
+    for seed_value in range(3):
         random.seed(seed_value)        # seed python RNG
         np.random.seed(seed_value)     # seed global NumPy RNG
         torch.manual_seed(seed_value)  # seed torch RNG
@@ -123,14 +123,14 @@ def model_step(hypers, Q, bqm_model, graph_dgl, torch_device, torch_dtype):
         print(f'Step took: {round(gnn_time, 2)}s')
         total_final_loss += final_hard_loss.item()
         total_best_loss += best_hard_loss.item()
-    avg_final_hard_loss = total_final_loss/1
-    avg_best_hard_loss = total_best_loss/1
+    avg_final_hard_loss = total_final_loss/3
+    avg_best_hard_loss = total_best_loss/3
     print(f'Average Final Hard loss: {avg_final_hard_loss}')
     print(f'Average Best Hard loss: {avg_best_hard_loss}')
     return {'loss': avg_best_hard_loss, 'final_bitstring' : final_bitstring, 'best_bitstring' : best_bitstring, 'status': STATUS_OK}
 
 
-patience = 5
+patience = 1000
 agg_type = 'mean'
 search_space = {
     # Params to search over
@@ -139,7 +139,7 @@ search_space = {
     'dropout': scope.float(hp.uniform('dropout', 0.0, 0.5)),
     'weight_decay': scope.float(hp.loguniform('weight_decay', -5, -1)),
     'lr': scope.float(hp.loguniform('lr', -5, -2)),
-    'temperature': scope.float(hp.uniform('temperature', 0.01, 0.1)) if Gumbel_sinkhorn else scope.float(hp.uniform('temperature', 1.5, 3)),
+    'temperature': scope.float(hp.uniform('temperature', 0.01, 1)) if Gumbel_sinkhorn else scope.float(hp.uniform('temperature', 1.5, 3)),
     #possibly experiment with layer_agg_type
     # Fixed params - GNN
     'number_classes': num_classes,

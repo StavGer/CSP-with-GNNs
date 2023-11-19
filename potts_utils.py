@@ -225,17 +225,10 @@ def log_sinkhorn(log_alpha, r, n_iter, eps = 1e-2):
         log_alpha = log_alpha - torch.logsumexp(log_alpha, -1, keepdim=True)
         log_alpha = torch.log(r) + log_alpha - torch.logsumexp(log_alpha, -2, keepdim=True)
         alpha = log_alpha.exp()
-        stop = False
-        if n_iter % 10 == 0: # make the computation faster by checking every 10 epochs if convergence is satisfied
-            for j in range(alpha.shape[0]):
-                if abs(alpha.sum(dim = -1)[j] - 1) < eps:
-                    stop = True
-                else:
-                    stop = False
-                    break
-            if stop:
-                break
-            if i == n_iter:
+        violations = torch.where(torch.abs(alpha.sum(dim = -1)) - 1 > eps)
+        if len(violations[0]) == 0:
+            break
+        if i == n_iter:
                 print('Sinkhorn did not converge!')
     return alpha, i
 
@@ -353,8 +346,8 @@ def run_gnn_training(Q, offset, stoich_const, Gumbel_sinkhorn, graph_dgl, net, e
         if scheduler is not None:
             scheduler.step(loss)
         # tracking: print intermediate loss at regular interval
-        # if epoch % 1000 == 0:
-        print('Epoch %d | Total Soft Loss: %.5f' % (epoch, loss.item()))
+        if epoch % 100 == 0:
+            print('Epoch %d | Total Soft Loss: %.5f' % (epoch, loss.item()))
 
 
     # Print final loss
