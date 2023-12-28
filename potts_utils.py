@@ -1,10 +1,10 @@
-import networkx as nx
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import random
 import numpy as np
-import math
+import matplotlib.pyplot as plt
+import os
 
 from dgl.nn.pytorch import SAGEConv
 from dgl.nn.pytorch import GraphConv
@@ -202,7 +202,7 @@ def loss_func(Q, probs, offset):
     loss = torch.unsqueeze(p, 0)@torch.unsqueeze(Q_flatten, 1) + offset
     return loss
 
-def log_sinkhorn(log_alpha, r, n_iter, eps = 1e-2):
+def log_sinkhorn(log_alpha, r, n_iter,  Q, offset, eps = 0.01):
     """Performs incomplete Sinkhorn normalization to log_alpha.
     By a theorem by Sinkhorn and Knopp [1], a sufficiently well-behaved  matrix
     with positive entries can be turned into a doubly-stochastic matrix
@@ -221,15 +221,21 @@ def log_sinkhorn(log_alpha, r, n_iter, eps = 1e-2):
       A 3D tensor of close-to-doubly-stochastic matrices (2D tensors are
         converted to 3D tensors with batch_size equals to 1)
     """
+    # Sinkhorn_start = time()
+    log_alpha[0, -1] = -100
     for i in range(n_iter):
+
         log_alpha = log_alpha - torch.logsumexp(log_alpha, -1, keepdim=True)
         log_alpha = torch.log(r) + log_alpha - torch.logsumexp(log_alpha, -2, keepdim=True)
         alpha = log_alpha.exp()
-        violations = torch.where(torch.abs(alpha.sum(dim = -1)) - 1 > eps)
-        if len(violations[0]) == 0:
+        violations_r = torch.where(torch.abs(alpha.sum(dim = -1) - 1) > eps)
+        violations_c = torch.where(torch.abs(alpha.sum(dim = -2) - r) > eps)
+        if (len(violations_r[0]) == 0 and len(violations_c[0]) == 0) :
             break
-        if i == n_iter:
-                print('Sinkhorn did not converge!')
+        if i == n_iter - 1:
+            print('Sinkhorn did not converge!')
+    if torch.abs(alpha[0,-1]) > eps:
+        print("Violation")
     return alpha, i
 
 def sample_gumbel(shape, device='cpu', eps=1e-20):
@@ -243,7 +249,7 @@ def sample_gumbel(shape, device='cpu', eps=1e-20):
     u = torch.rand(shape, device=device)
     return -torch.log(-torch.log(u + eps) + eps)
 
-def gumbel_sinkhorn(log_alpha, stoich_const, tau, n_iter):
+def gumbel_sinkhorn(log_alpha, stoich_const, tau, n_iter, Q, offset):
     """ Sample a permutation matrix from the Gumbel-Sinkhorn distribution
     with parameters given by log_alpha and temperature tau.
 
@@ -257,11 +263,11 @@ def gumbel_sinkhorn(log_alpha, stoich_const, tau, n_iter):
     gumbel_noise = sample_gumbel(log_alpha.shape, device=log_alpha.device)
 
     # Apply the Sinkhorn operator!
-    sampled_perm_mat = log_sinkhorn((log_alpha + gumbel_noise)/tau, stoich_const, n_iter)
+    sampled_perm_mat = log_sinkhorn((log_alpha + gumbel_noise)/tau, stoich_const, n_iter, Q, offset)
     return sampled_perm_mat
 
-def run_gnn_training(Q, offset, stoich_const, Gumbel_sinkhorn, graph_dgl, net, embed, optimizer, scheduler, temperature,
-                     number_epochs=int(1e5), patience=1000, tolerance=1e-4, prob_threshold = 0.5,  seed=1):
+def run_gnn_training(filename, Q, offset, stoich_const, Gumbel_sinkhorn, graph_dgl, net, embed, optimizer, scheduler, temperature,
+                     scaling, number_epochs=int(1e5), patience=100, tolerance=1e-4, prob_threshold = 0.5, flag = False,  seed=1):
     """
     Function to run model training for given graph, GNN, optimizer, and set of hypers.
     Includes basic early stopping criteria. Prints regular updates on progress as well as
@@ -295,30 +301,45 @@ def run_gnn_training(Q, offset, stoich_const, Gumbel_sinkhorn, graph_dgl, net, e
     set_seed(seed)
 
     inputs = embed.weight
-    t = nn.Parameter(temperature*torch.ones(1)).to(graph_dgl.device)
+    t = (temperature*torch.ones(1)).to(graph_dgl.device)
     # Tracking
     best_loss = torch.tensor(float('Inf'))
-    best_bitstring = torch.zeros((graph_dgl.number_of_nodes(),)).type(Q.dtype).to(graph_dgl.device)
-
+    best_bitstring = torch.zeros((graph_dgl.number_of_nodes(),stoich_const.shape[0])).type(Q.dtype).to(graph_dgl.device)
+    bitstring = torch.zeros((graph_dgl.number_of_nodes(),stoich_const.shape[0])).type(Q.dtype).to(graph_dgl.device)
     # Early stopping to allow NN to train to near-completion
     prev_loss = 1.  # initial loss value (arbitrary)
     cnt = 0  # track number times early stopping is triggered
-    best_loss = 1e4
+    best_loss = 1e8
+    i = 0
+    if flag and Gumbel_sinkhorn: gs_iters = []
     # Training logic
     for epoch in range(number_epochs):
-
         # get soft prob assignments
         logits = net(inputs)
         if Gumbel_sinkhorn:
-            probs, i = gumbel_sinkhorn(logits, stoich_const, tau=t, n_iter=10000)
+            if i>=500:
+                t = scaling*t
+                print("Temperature scaled by " + str(scaling) + ' ,t = ' + str(t))
+            probs, i = gumbel_sinkhorn(logits, stoich_const, tau=t, n_iter=5000, Q= Q, offset = offset)
+            if flag: gs_iters.append(i)
         else:
+            if cnt%1000==0 and cnt>0:
+                t = scaling*t
+                print("Temperature scaled by " + str(scaling) + ' ,t = ' + str(t))
             logits = torch.div(logits, t)
             # apply softmax for normalization
             probs = F.softmax(logits, dim=1)
         loss = loss_func(Q, probs, offset)
+        # bitstring = torch.zeros((graph_dgl.number_of_nodes(),stoich_const.shape[0])).type(Q.dtype).to(graph_dgl.device)
         bitstring = (probs.detach() >= prob_threshold) * 1
+        # a different projector from probs to bitstring
+        # for i,l in enumerate(stoich_const):
+        #     s, indices = torch.sort(probs[:, i])
+        #     z = indices[int((probs.shape[0]- l).item()):]
+        #     bitstring[z, i] = 1
+        hard_loss = loss_func(Q, bitstring.float(), offset)
 
-
+        # assert(bitstring.sum(dim=0).any()==stoich_const.any())
         # Early stopping check
         # If loss increases or change in loss is too small, trigger
         if (abs(loss - prev_loss) <= tolerance) | (loss >= best_loss ):
@@ -346,14 +367,24 @@ def run_gnn_training(Q, offset, stoich_const, Gumbel_sinkhorn, graph_dgl, net, e
         if scheduler is not None:
             scheduler.step(loss)
         # tracking: print intermediate loss at regular interval
-        if epoch % 100 == 0:
-            print('Epoch %d | Total Soft Loss: %.5f' % (epoch, loss.item()))
+        print('Epoch %d | Total Soft Loss: %.5f' % (epoch, loss.item()))
+        print('Epoch %d | Total Hard Loss: %.5f' % (epoch, loss_func(Q, bitstring.float(), offset).item()))
+        # if epoch % 100 == 0:
+        #     print('Epoch %d | Total Soft Loss: %.5f' % (epoch, loss.item()))
+            # print('Best Soft Loss so far: %.5f' % (best_loss.item()))
 
-
+    if flag and Gumbel_sinkhorn:
+        folder_to_write = "plots_no_scaling/" if scaling==1 else "plots_with_scaling/"
+        if not os.path.exists(folder_to_write):
+            os.makedirs(folder_to_write)
+        gs_iters = np.array(gs_iters)
+        epochs = np.arange(gs_iters.shape[0])
+        f_name = "GS_iters_" + filename + 'seed_' + str(seed) + '.pdf'
+        plt.plot(epochs, gs_iters, color = 'blue')
+        plt.savefig(os.path.join(folder_to_write, f_name))
     # Print final loss
     print('Last Epoch %d | Final Soft loss: %.5f' % (epoch, loss.item()))
     print('Best Loss Epoch %d | Best Soft loss: %.5f' % (best_loss_epoch, best_loss.item()))
     # Final coloring
-    final_loss = loss
-    final_bitstring = (probs.detach() >= prob_threshold) * 1
+    final_bitstring = bitstring
     return probs, epoch, final_bitstring, best_bitstring

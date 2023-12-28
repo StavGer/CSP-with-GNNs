@@ -143,7 +143,11 @@ class BQM():
                     line_prev += line.strip()
 
                 line = f.readline()
-
+            # eq_constraint_coeff = []
+            # terms = line_prev.split("+")
+            # for i in range(len(terms)):
+            #     print(terms[i])
+            #     eq_constraint_coeff.append(int(terms[i].split(" ")[1]) if terms[i].split(" ")[1].isdigit() else 1)
             if not line_prev.startswith("Bounds"):
                 self.constraints_str.append(line_prev)
 
@@ -339,12 +343,8 @@ def qubo_to_torch(bqm_model, eq_inf, leq_infinity, with_void = False, Gumbel_sin
     n_variables = len(bqm_model.linear.keys()) # without void
     Qunc = torch.zeros((n_variables, n_variables))
     elements = list(bqm_model.linear.keys())
-    n_atoms = 0
-    for i in range(len(elements)):
-        if elements[i][-1] == 0:
-            n_atoms += 1
-        else:
-            break
+    atoms = [element[0] for element in elements if element[1]==0]
+    n_atoms = len(atoms)
     num_positions = int(n_variables / n_atoms)
     n_total_variables = int((n_atoms + 1) * num_positions) # with void
     for k in (bqm_model.quadratic.keys()):
@@ -433,6 +433,6 @@ def qubo_to_torch(bqm_model, eq_inf, leq_infinity, with_void = False, Gumbel_sin
     if with_void:
         eq_const.append(num_positions - sum(eq_const)) if num_positions - sum(eq_const) else eq_const.append(1e-10) # number of positions assigned to void
         stoich_const = torch.tensor(eq_const, dtype = Q.dtype, device = Q.get_device())
-        return Q_with_void, elements, n_atoms, stoich_const
+        return Q_with_void, num_positions, atoms, stoich_const
     else:
-        return Q, elements, n_atoms, stoich_const
+        return Q, num_positions, atoms, stoich_const
