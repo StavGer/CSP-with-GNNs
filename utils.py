@@ -1,12 +1,15 @@
-import torch, numpy
-import wandb
+import torch
+import math
+import numpy as np
 import networkx as nx
 import torch.nn as nn
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
+from scipy.spatial.distance import pdist, squareform
+from scipy.optimize import linear_sum_assignment
 from dgl.nn.pytorch import GraphConv, SAGEConv
 from itertools import chain, islice
 from time import time
+
 
 
 # GNN class to be instantiated with specified param values
@@ -101,7 +104,8 @@ class GraphSAGE_dev(nn.Module):
 
 # Generate random graph of specified size and type,
 # with specified degree (d) or edge probability (p)
-def generate_graph(n, d=None, p=None, Q=None, sparsity_threshold = None, graph_type='reg', random_seed=0):
+def generate_graph(n, d=None, p=None, pos=None, cutoff_dist = None, graph_type='reg',
+                   random_seed=0):
     """
     Helper function to generate a NetworkX random graph of specified type,
     given specified parameters (e.g. d-regular, d=3). Must provide one of
@@ -127,27 +131,26 @@ def generate_graph(n, d=None, p=None, Q=None, sparsity_threshold = None, graph_t
         nx_temp = nx.erdos_renyi_graph(n, p, seed=random_seed)
     elif graph_type == 'complete':
         nx_temp = nx.complete_graph(n=n)
-    elif graph_type == 'sparse':
+    elif graph_type == 'cutoff':
         nx_temp = nx.complete_graph(n=n)
-        means = Q.mean(dim = 1, keepdim = True)
-        stds = Q.std(dim = 1, keepdim = True)
-        #normalize Q matrix
-        normQ = (Q - means) / stds
-        #finding Q elements with low contributions
-        ind = torch.where(abs(normQ) < sparsity_threshold)
-        ind = tuple(t.cpu() for t in ind)
+        distvec = pdist(pos)
+        square_dist = squareform(distvec) # square distance matrix between positions
+        ind = np.where(square_dist>cutoff_dist) # find pairs of positions with distance > cutoff distance
         A = nx.adjacency_matrix(nx_temp).todense()
         A[ind] = 0
         nx_temp = nx.from_numpy_matrix(A)
     else:
         raise NotImplementedError(f'!! Graph type {graph_type} not handled !!')
-
     # Networkx does not enforce node order by default
     nx_temp = nx.relabel.convert_node_labels_to_integers(nx_temp)
     # Need to pull nx graph into OrderedGraph so training will work properly
     nx_graph = nx.OrderedGraph()
     nx_graph.add_nodes_from(sorted(nx_temp.nodes()))
     nx_graph.add_edges_from(nx_temp.edges)
+    # if edge_attrs is not None:
+    #     for i, l in enumerate(nx_graph.edges):
+    #         nx.set_edge_attributes(nx_graph, {l:{'interaction':edge_attrs[i]}})
+    # nx_graph = from_networkx(nx_graph) for pyg
     return nx_graph
 
 
@@ -249,7 +252,7 @@ def get_gnn(n_nodes, graph_encoder, gnn_hypers, opt_params, scheduler_bool, torc
     else:
         optimizer = torch.optim.Adam(params, **opt_params)
     if scheduler_bool:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=100)
     else:
         scheduler = None
     return net, embed, optimizer, scheduler
@@ -328,5 +331,37 @@ def run_gnn_training(Qunc, C1, C2, offset, dgl_graph, net, embed, optimizer, sch
     final_bitstring = (probs.detach() >= prob_threshold) * 1
     # wandb.run.summary["best_loss"] = best_loss
     return net, epoch, final_bitstring, best_bitstring
+
+
+def crystal_coordinates(struct_name, g, num_positions):
+    cell_param = {'SrTiO3': 3.9, 'Y2O3': 10.7, 'Y2Ti2O7': 10.2, 'LiMgAlPO': 8.2}
+    discrete_dist = cell_param[struct_name] / g
+    pos = np.zeros((num_positions, 3))
+    row = 0
+    for (i, j, k) in np.ndindex(g, g, g):
+        pos[row,] = np.array([i * discrete_dist, j * discrete_dist, k * discrete_dist])
+        row = row + 1
+    return pos
+
+def gaussian_kernel(x, sigma):
+    return torch.exp(- (x**2/(2*sigma**2)))
+
+def interactions_to_edge_features(Q, n_atoms):
+    edge_features = []
+    Z = Q + torch.transpose(Q, 0 ,1) - torch.diag(torch.diagonal(Q))
+    for i in range(0, Q.shape[0]-n_atoms, n_atoms+1):
+        for j in range(0, Q.shape[1]-n_atoms, n_atoms+1):
+            if i!=j: # do not consider self-loops for now
+                edge_features.append(torch.unique(torch.flatten(Z[i:i+n_atoms, j:j+n_atoms])))
+    edge_features = torch.stack(edge_features, dim = 0)
+    return edge_features
+
+
+
+
+
+
+
+
 
 

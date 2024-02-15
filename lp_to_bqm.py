@@ -360,8 +360,8 @@ def qubo_to_torch(bqm_model, eq_inf, leq_infinity, with_void = False, Gumbel_sin
     # get number of nodes
     n_variables = len(bqm_model.linear.keys())
     Q = torch.zeros((n_variables, n_variables))
-    C1 = torch.zeros((n_variables, n_variables))
-    C2 = torch.zeros((n_variables, n_variables))
+    # C1 = torch.zeros((n_variables, n_variables))
+    # C2 = torch.zeros((n_variables, n_variables))
     elements = list(bqm_model.linear.keys())
     for k in (bqm_model.quadratic.keys()):
         Qcoord1 = [idx for idx, key in enumerate(elements) if key == k[0]]
@@ -369,18 +369,18 @@ def qubo_to_torch(bqm_model, eq_inf, leq_infinity, with_void = False, Gumbel_sin
         Q[Qcoord1, Qcoord2] = bqm_model.quadratic[k]
         Qdiag = [idx for idx, key in enumerate(elements) if key == k]
         Q[Qdiag, Qdiag] = bqm_model.quadratic[k]
-    for k in (bqm_model.C1.keys()):
-        C1coord1 = [idx for idx, key in enumerate(elements) if key == k[0]]
-        C1coord2 = [idx for idx, key in enumerate(elements) if key == k[1]]
-        C1[C1coord1, C1coord2] = bqm_model.C1[k]
-        C1diag = [idx for idx, key in enumerate(elements) if key == k]
-        C1[C1diag, C1diag] = bqm_model.C1[k]
-    for k in (bqm_model.C2.keys()):
-        C2coord1 = [idx for idx, key in enumerate(elements) if key == k[0]]
-        C2coord2 = [idx for idx, key in enumerate(elements) if key == k[1]]
-        C2[C2coord1, C2coord2] = bqm_model.C2[k]
-        C2diag = [idx for idx, key in enumerate(elements) if key == k]
-        C2[C2diag, C2diag] = bqm_model.C2[k]
+    # for k in (bqm_model.C1.keys()):
+    #     C1coord1 = [idx for idx, key in enumerate(elements) if key == k[0]]
+    #     C1coord2 = [idx for idx, key in enumerate(elements) if key == k[1]]
+    #     C1[C1coord1, C1coord2] = bqm_model.C1[k]
+    #     C1diag = [idx for idx, key in enumerate(elements) if key == k]
+    #     C1[C1diag, C1diag] = bqm_model.C1[k]
+    # for k in (bqm_model.C2.keys()):
+    #     C2coord1 = [idx for idx, key in enumerate(elements) if key == k[0]]
+    #     C2coord2 = [idx for idx, key in enumerate(elements) if key == k[1]]
+    #     C2[C2coord1, C2coord2] = bqm_model.C2[k]
+    #     C2diag = [idx for idx, key in enumerate(elements) if key == k]
+    #     C2[C2diag, C2diag] = bqm_model.C2[k]
     Q_with_void = [[0]*n_total_variables]*n_total_variables
     Qunc_with_void = [[0]*n_total_variables]*n_total_variables
     C1_with_void = [[0]*n_total_variables]*n_total_variables
@@ -393,38 +393,38 @@ def qubo_to_torch(bqm_model, eq_inf, leq_infinity, with_void = False, Gumbel_sin
         else:
             Q_with_void[i] = [Q[i-c, j] for j in range(n_variables)]
             [Q_with_void[i].insert(j, 0) for j in range(n_atoms, n_total_variables, n_atoms + 1)] # add 0s to columns for void
-            Qunc_with_void[i] = [Qunc[i-c, j] for j in range(n_variables)]
-            [Qunc_with_void[i].insert(j, 0) for j in range(n_atoms, n_total_variables, n_atoms + 1)] # add 0s to columns for void
-            C1_with_void[i] = [C1[i-c, j] for j in range(n_variables)]
-            [C1_with_void[i].insert(j, 0) for j in range(n_atoms, n_total_variables, n_atoms + 1)] # add 0s to columns for void
-            C2_with_void[i] = [C2[i-c, j] for j in range(n_variables)]
-            [C2_with_void[i].insert(j, 0) for j in range(n_atoms, n_total_variables, n_atoms + 1)] # add 0s to columns for void
+            # Qunc_with_void[i] = [Qunc[i-c, j] for j in range(n_variables)]
+            # [Qunc_with_void[i].insert(j, 0) for j in range(n_atoms, n_total_variables, n_atoms + 1)] # add 0s to columns for void
+            # C1_with_void[i] = [C1[i-c, j] for j in range(n_variables)]
+            # [C1_with_void[i].insert(j, 0) for j in range(n_atoms, n_total_variables, n_atoms + 1)] # add 0s to columns for void
+            # C2_with_void[i] = [C2[i-c, j] for j in range(n_variables)]
+            # [C2_with_void[i].insert(j, 0) for j in range(n_atoms, n_total_variables, n_atoms + 1)] # add 0s to columns for void
     Q_with_void = torch.tensor(Q_with_void)
-    Qunc_with_void = torch.tensor(Qunc_with_void)
-    C1_with_void = torch.tensor(C1_with_void)
-    C2_with_void = torch.tensor(C2_with_void)
+    # Qunc_with_void = torch.tensor(Qunc_with_void)
+    # C1_with_void = torch.tensor(C1_with_void)
+    # C2_with_void = torch.tensor(C2_with_void)
     if torch_dtype is not None:
         Q = Q.type(torch_dtype)
         Q_with_void = Q_with_void.type(torch_dtype)
-        Qunc = Qunc.type(torch_dtype)
-        Qunc_with_void = Qunc_with_void.type(torch_dtype)
-        C1 = C1.type(torch_dtype)
-        C1_with_void = C1_with_void.type(torch_dtype)
-        C2 = C2.type(torch_dtype)
-        C2_with_void = C2_with_void.type(torch_dtype)
+        # Qunc = Qunc.type(torch_dtype)
+        # Qunc_with_void = Qunc_with_void.type(torch_dtype)
+        # C1 = C1.type(torch_dtype)
+        # C1_with_void = C1_with_void.type(torch_dtype)
+        # C2 = C2.type(torch_dtype)
+        # C2_with_void = C2_with_void.type(torch_dtype)
     if torch_device is not None:
         Q = Q.to(torch_device)
         Q_with_void = Q_with_void.to(torch_device)
-        Qunc = Qunc.to(torch_device)
-        Qunc_with_void = Qunc_with_void.to(torch_device)
-        C1 = C1.to(torch_device)
-        C1_with_void = C1_with_void.to(torch_device)
-        C2 = C2.to(torch_device)
-        C2_with_void = C2_with_void.to(torch_device)
-    Z_with_void = Qunc_with_void + C1_with_void + C2_with_void
-    Z = Qunc + C1 + C2
-    assert Q.any()==Z.any()
-    assert Q_with_void.any()==Z_with_void.any()
+        # Qunc = Qunc.to(torch_device)
+        # Qunc_with_void = Qunc_with_void.to(torch_device)
+        # C1 = C1.to(torch_device)
+        # C1_with_void = C1_with_void.to(torch_device)
+        # C2 = C2.to(torch_device)
+        # C2_with_void = C2_with_void.to(torch_device)
+    # Z_with_void = Qunc_with_void + C1_with_void + C2_with_void
+    # Z = Qunc + C1 + C2
+    # assert Q.any()==Z.any()
+    # assert Q_with_void.any()==Z_with_void.any()
     eq_const = [] # values for stoichiometry constraints
     for i in range(1, len(bqm_model.constraints_dict)):
         if bqm_model.constraints_dict[i]['type'] == 'EQ':
