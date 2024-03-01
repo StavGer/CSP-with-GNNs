@@ -10,6 +10,9 @@ from dgl.nn.pytorch import SAGEConv, GraphConv, GATConv, GINConv
 from itertools import chain
 import torch.optim as optim
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LambdaLR
+from torch_geometric.nn.conv import MessagePassing
+from torch_geometric.nn.dense.linear import Linear
 import networkx as nx
 
 
@@ -201,6 +204,7 @@ class GIN(nn.Module):
         return h
 
 
+
 # Define GNN GraphConv object
 class GNNConv(nn.Module):
     """
@@ -253,6 +257,64 @@ class GNNConv(nn.Module):
         return h
 
 
+class SAGECONV_edges(MessagePassing):
+
+    def __init__(self,
+                 in_channels_feats,
+                 in_channels_edges,
+                 out_channels,
+                 agg_type='mean',
+                 root_weight = True):
+
+        super(SAGECONV_edges, self).__init__()
+
+        self.in_channels_feats = in_channels_feats
+        self.in_channels_edges = in_channels_edges
+        self.out_channels = out_channels
+        self.aggr = agg_type
+        self.root_weight = root_weight
+        self.lin1 = Linear(in_channels_edges + in_channels_feats, out_channels, bias=True)
+        self.lin2 = Linear(in_channels_feats, out_channels, bias=True)
+
+
+    def forward(self, x, edge_index, edge_attr):
+        out = self.propagate(edge_index, x=x, edge_attr=edge_attr)
+        return self.lin2(x) + out
+
+    def message(self, x_j, edge_attr):
+        return self.lin1(torch.cat([x_j, edge_attr], dim=-1))
+
+class SAGE_with_EdgeConv(torch.nn.Module):
+
+    def __init__(self, num_in_channels_feats: int, num_in_channels_edges: int, hidden_dim: int,
+                 num_out_channels: int, dropout):
+
+        super(SAGE_with_EdgeConv, self).__init__()
+
+        self.num_in_channels_feats = num_in_channels_feats
+        self.num_in_channels_edges = num_in_channels_edges
+        self.hidden_dim = hidden_dim
+        self.num_out_channels = num_out_channels
+        self.dropout = nn.Dropout(p=dropout)
+
+        self.layers = nn.ModuleList()
+        # input layer
+        self.layers.append(SAGECONV_edges(self.num_in_channels_feats, self.num_in_channels_edges, self.hidden_dim))
+        # output layer
+        self.layers.append(SAGECONV_edges(self.hidden_dim, self.num_in_channels_edges, self.num_out_channels))
+
+
+    def forward(self, data):
+        x = data.x
+        for i, layer in enumerate(self.layers):
+            if i != 0:
+                x = self.dropout(x)
+            x = layer(x, data.edge_index, data.edge_attr)
+            if i !=1:
+                x = F.relu(x)
+        return x
+
+
 # Construct graph to learn on #
 def get_gnn(g, n_nodes, gnn_hypers, opt_params, lr_scheduler_type, torch_device, torch_dtype):
     """
@@ -296,6 +358,8 @@ def get_gnn(g, n_nodes, gnn_hypers, opt_params, lr_scheduler_type, torch_device,
         net = GATnet(g, g.ndata['pos'].shape[1], hidden_dim, 4, number_classes, dropout)
     elif model == "GIN":
         net = GIN(g, dim_embedding, hidden_dim, number_classes, dropout)
+    elif model == "GraphSAGE-Edge":
+        net = SAGE_with_EdgeConv(dim_embedding, g.edge_attr.shape[1], hidden_dim, number_classes, dropout)
     else:
         raise ValueError("Invalid model type input! Model type has to be in one of these two options: ['GraphConv', 'GraphSAGE']")
 
@@ -311,11 +375,18 @@ def get_gnn(g, n_nodes, gnn_hypers, opt_params, lr_scheduler_type, torch_device,
     # optimizer = torch.optim.SGD(params, **opt_params)
     if lr_scheduler_type == "ReduceLRonPlateau":
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=100, verbose=True)
-    elif lr_scheduler_type == "Cosine Annealing":
+    elif lr_scheduler_type == "Cosine Warmup":
         scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
-            num_warmup_steps=100,
-            num_training_steps=5000
+            num_warmup_steps=10,
+            num_training_steps=1000
+        )
+    elif lr_scheduler_type == "Cosine warmup with restarts":
+        scheduler = get_cosine_with_hard_restarts_schedule_with_warmup(
+            optimizer = optimizer,
+            num_warmup_steps=50,
+            num_training_steps=1000,
+            num_cycles=3
         )
     else:
         scheduler = None
@@ -354,7 +425,42 @@ def get_cosine_schedule_with_warmup(
         progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
         return max(0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress)))
 
-    return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch, verbose=True)
+    return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
+
+
+def get_cosine_with_hard_restarts_schedule_with_warmup(
+        optimizer: Optimizer, num_warmup_steps: int, num_training_steps: int, num_cycles: int = 1, last_epoch: int = -1
+):
+    """
+    Create a schedule with a learning rate that decreases following the values of the cosine function between the
+    initial lr set in the optimizer to 0, with several hard restarts, after a warmup period during which it increases
+    linearly between 0 and the initial lr set in the optimizer.
+
+    Args:
+        optimizer ([`~torch.optim.Optimizer`]):
+            The optimizer for which to schedule the learning rate.
+        num_warmup_steps (`int`):
+            The number of steps for the warmup phase.
+        num_training_steps (`int`):
+            The total number of training steps.
+        num_cycles (`int`, *optional*, defaults to 1):
+            The number of hard restarts to use.
+        last_epoch (`int`, *optional*, defaults to -1):
+            The index of the last epoch when resuming training.
+
+    Return:
+        `torch.optim.lr_scheduler.LambdaLR` with the appropriate schedule.
+    """
+
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+        if progress >= 1.0:
+            return 0.0
+        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * ((float(num_cycles) * progress) % 1.0))))
+
+    return LambdaLR(optimizer, lr_lambda, last_epoch, verbose = True)
 
 
 def loss_func(Q, probs, offset):
@@ -465,11 +571,14 @@ def run_gnn_training(filename, Q, offset, stoich_const, Gumbel_sinkhorn, graph_d
     prev_loss = 1.  # initial loss value (arbitrary)
     cnt = 0  # track number times early stopping is triggered
     best_loss = 1e8
-    i = 0
+    ANNEAL_RATE = 0.00003
+    temp_min = torch.tensor(0.5)
     if flag and Gumbel_sinkhorn:
         gs_iters = []
         temp_logger = []
     # Training logic
+    assgnmnts_change = []
+    bitstring_o = bitstring
     for epoch in range(number_epochs):
         # get soft prob assignments
         # logits = net(graph_dgl) for GAT
@@ -477,9 +586,9 @@ def run_gnn_training(filename, Q, offset, stoich_const, Gumbel_sinkhorn, graph_d
         if Gumbel_sinkhorn:
             if flag:
                 temp_logger.append(t.item())
-            # if i>=500:
-            #     t = scaling*t
-            #     print("Temperature scaled by " + str(scaling) + ' ,t = ' + str(t))
+            if i>=1000:
+                t = scaling*t
+                print("Temperature scaled by " + str(scaling) + ' ,t = ' + str(t))
             probs, i = gumbel_sinkhorn(logits, stoich_const, tau=t, n_iter=50000)
             if flag: gs_iters.append(i)
         else:
@@ -490,13 +599,17 @@ def run_gnn_training(filename, Q, offset, stoich_const, Gumbel_sinkhorn, graph_d
             # apply softmax for normalization
             probs = F.softmax(logits, dim=1)
         loss = loss_func(Q, probs, offset)
-        bitstring = (probs.detach() >= prob_threshold) * 1
+        # t = torch.maximum(t * torch.exp(torch.tensor(-ANNEAL_RATE * epoch)), temp_min)
+        bitstring_n = (probs.detach() >= prob_threshold) * 1
+        changes = bitstring_n.type(torch.uint8) ^ bitstring_o.type(torch.uint8)
+        assgnmnts_change.append([torch.where(changes[:, col] == 1)[0].numel() for col in range(bitstring.shape[1]-1)])
+
         # a different projector from probs to bitstring
         # for i,l in enumerate(stoich_const):
         #     s, indices = torch.sort(probs[:, i])
         #     z = indices[int((probs.shape[0]- l).item()):]
         #     bitstring[z, i] = 1
-        hard_loss = loss_func(Q, bitstring.float(), offset)
+        hard_loss = loss_func(Q, bitstring_n.float(), offset)
 
         # assert(bitstring.sum(dim=0).any()==stoich_const.any())
         # Early stopping check
@@ -507,7 +620,7 @@ def run_gnn_training(filename, Q, offset, stoich_const, Gumbel_sinkhorn, graph_d
             cnt = 0
         if loss < best_loss:
             best_loss = loss
-            best_bitstring = bitstring
+            best_bitstring = bitstring_n
             best_loss_epoch = epoch
             best_probs = probs
         # update loss tracking
@@ -517,20 +630,19 @@ def run_gnn_training(filename, Q, offset, stoich_const, Gumbel_sinkhorn, graph_d
         if cnt >= patience:
             print(f'Stopping early on epoch {epoch}. Patience count: {cnt}')
             break
-
         # run optimization with backpropagation
         optimizer.zero_grad()  # clear gradient for step
-        loss.backward(retain_graph=True)  # calculate gradient through compute graph
+        loss.backward()  # calculate gradient through compute graph
         optimizer.step()  # take step, update weights
         if lr_scheduler is not None:
-            lr_scheduler.step(loss)
+            lr_scheduler.step()
         # tracking: print intermediate loss at regular interval
         print('Epoch %d | Total Soft Loss: %.5f' % (epoch, loss.item()))
-        print('Epoch %d | Total Hard Loss: %.5f' % (epoch, loss_func(Q, bitstring.float(), offset).item()))
+        print('Epoch %d | Total Hard Loss: %.5f' % (epoch, loss_func(Q, bitstring_n.float(), offset).item()))
+        bitstring_o = bitstring_n
         # if epoch % 100 == 0:
         #     print('Epoch %d | Total Soft Loss: %.5f' % (epoch, loss.item()))
             # print('Best Soft Loss so far: %.5f' % (best_loss.item()))
-
     if flag and Gumbel_sinkhorn:
         folder_to_write = "plots_no_scaling/" if scaling==1 else "plots_with_scaling/"
         if not os.path.exists(folder_to_write):
@@ -549,9 +661,10 @@ def run_gnn_training(filename, Q, offset, stoich_const, Gumbel_sinkhorn, graph_d
         plt.clf()
         plt.plot(epochs, temp_logger, color = 'blue')
         plt.savefig(os.path.join(folder_to_write, temp_file))
+        plt.clf()
     # Print final loss
     print('Last Epoch %d | Final Soft loss: %.5f' % (epoch, loss.item()))
     print('Best Loss Epoch %d | Best Soft loss: %.5f' % (best_loss_epoch, best_loss.item()))
     # Final coloring
     final_bitstring = bitstring
-    return probs, epoch, final_bitstring, best_bitstring
+    return probs, epoch, final_bitstring, best_bitstring, assgnmnts_change

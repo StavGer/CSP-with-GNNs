@@ -347,14 +347,18 @@ def gaussian_kernel(x, sigma):
     return torch.exp(- (x**2/(2*sigma**2)))
 
 def interactions_to_edge_features(Q, n_atoms):
+    interactions = []
     edge_features = []
     Z = Q + torch.transpose(Q, 0 ,1) - torch.diag(torch.diagonal(Q))
     for i in range(0, Q.shape[0]-n_atoms, n_atoms+1):
         for j in range(0, Q.shape[1]-n_atoms, n_atoms+1):
             if i!=j: # do not consider self-loops for now
-                edge_features.append(torch.unique(torch.flatten(Z[i:i+n_atoms, j:j+n_atoms])))
+                interactions.append(torch.flatten(Z[i:i+n_atoms, j:j+n_atoms]))
+                l = interactions[-1]
+                edge_features.append(torch.tensor([x for i, x in enumerate(l) if x not in l[:i]]))
     edge_features = torch.stack(edge_features, dim = 0)
-    return edge_features
+    return F.normalize(edge_features, dim=0)
+
 
 
 

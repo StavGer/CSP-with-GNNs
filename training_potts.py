@@ -25,11 +25,11 @@ from utils import generate_graph, crystal_coordinates, gaussian_kernel
 from potts_utils import get_gnn, run_gnn_training, loss_func
 from lp_to_bqm import BQM, qubo_to_torch
 
-Gumbel_sinkhorn = True # if False Potts model, if True G.S. Potts
+Gumbel_sinkhorn = True  # if False Potts model, if True G.S. Potts
 file_to_parse = 'SrTiO3G4.lp'
 struct_info = file_to_parse.split('G')
 struct_name = struct_info[0] #
-g = int(struct_info[1][0]) # cell discretization
+g = int(struct_info[1][0])  # cell discretization
 file_to_write = file_to_parse.split('.')[0]
 filename = file_to_write + '_Test'
 
@@ -45,9 +45,9 @@ graph_encoder = 'GraphSAGE'
 number_epochs = int(1e5)
 PROB_THRESHOLD = 0.5
 sparsity_threshold = 0.0
-leq_weight = 200 # penalty weight for atom or void per position constraints for Potts model
-eq_weight = 200 # penalty weight for stoichiometry constraints for Potts model
-lr_scheduler_type = "No" # learning rate scheduler
+leq_weight = 200  # penalty weight for atom or void per position constraints for Potts model
+eq_weight = 200  # penalty weight for stoichiometry constraints for Potts model
+lr_scheduler_type = "Cosine Annealing"  # learning rate scheduler
 cutoff_dist = 5 if graph_type == "cutoff" else 0
 temp_scaling = False
 scaling_str = "_dynscal" if temp_scaling else "_no_scaling"
@@ -60,21 +60,21 @@ losses = []
 for i in range(len(trials_history)):
     losses.append(trials_history.results[i]['loss'])
 desc_losses_ind = np.argsort(losses)
-with_void = True # include void for each position
+with_void = True  # include void for each position
 Q, num_positions, atoms, stoich_const = qubo_to_torch(
     bqm_model, eq_inf=eq_weight, leq_infinity=leq_weight,
     with_void = with_void,  torch_dtype=TORCH_DTYPE, Gumbel_sinkhorn=Gumbel_sinkhorn,
-    torch_device=TORCH_DEVICE) # pre-constrained Q matrix
+    torch_device=TORCH_DEVICE)  # pre-constrained Q matrix
 
-pos = crystal_coordinates(struct_name, g, num_positions) # atoms' candidate 3d coordinates within the unit cell #except for SrO
-n_atoms = len(atoms) # number of atoms
-num_classes = (n_atoms + 1) if with_void else n_atoms # number of node classes
+pos = crystal_coordinates(struct_name, g, num_positions)  # atoms' candidate 3d coordinates within the unit cell #except for SrO
+n_atoms = len(atoms)  # number of atoms
+num_classes = (n_atoms + 1) if with_void else n_atoms  # number of node classes
 n_variables = num_positions*num_classes
 print("Crystal Structure Prediction of " + file_to_parse.split('.')[0] + " with " + str(num_positions)
       + " positions" + " and " + str(atoms) + " atoms.")
 print(n_variables, "Variables in the MultiClass Classification Problem")
 # Problem size (e.g. graph size)
-n = num_positions # number of graph nodes = number of crystal's positions
+n = num_positions  # number of graph nodes = number of crystal's positions
 
 
 # Sample hyperparameters
@@ -118,16 +118,16 @@ graph_dgl = dgl.from_networkx(nx_graph=nx_graph)
 distvec = pdist(pos)
 square_dist = squareform(distvec) # square distance matrix between positions
 node_dist = list(square_dist.reshape(square_dist.shape[0]*square_dist.shape[1])) #flatten node distances
-node_dist = [i for i in node_dist if i != 0] # remove 0s
+node_dist = [i for i in node_dist if i != 0]  # remove 0s
 if cutoff_dist>0:
     node_dist = [i for i in node_dist if i<cutoff_dist] # remove distances of nodes with distance greater than cutoff
 node_dist = torch.tensor(node_dist)
 gaussian_dist = gaussian_kernel(node_dist, sigma=1)
 pos = (pos-np.min(pos))/(np.max(pos)-np.min(pos))
-graph_dgl.ndata['pos'] = torch.tensor(pos).type(TORCH_DTYPE) # add 3D coordinates as nodes' features
+# graph_dgl.ndata['pos'] = torch.tensor(pos).type(TORCH_DTYPE) # add 3D coordinates as nodes' features
 graph_dgl.edata["edge_weights"] = gaussian_dist.type(TORCH_DTYPE)
 if graph_encoder == "GAT":
-    graph_dgl = dgl.add_self_loop(graph_dgl) # required for GAT
+    graph_dgl = dgl.add_self_loop(graph_dgl)  # required for GAT
 graph_dgl = graph_dgl.to(TORCH_DEVICE)
 # Establish pytorch GNN + optimizer
 # Retrieve known optimizer hypers
@@ -154,7 +154,7 @@ min_energy_found = 0
 relative_optimality_gap = np.zeros((num_tests, 1))
 best_bitstring = []
 deg = nx_graph.degree
-avg_degree = sum([i[1] for i in deg])/nx_graph.number_of_nodes() # average graph degree
+avg_degree = sum([i[1] for i in deg])/nx_graph.number_of_nodes()  # average graph degree
 graph_density = nx_graph.number_of_edges()/(nx_graph.number_of_nodes()*(nx_graph.number_of_nodes()-1)/2)
 for seed_value in range(10, 10 + num_tests):
     random.seed(seed_value)        # seed python RNG

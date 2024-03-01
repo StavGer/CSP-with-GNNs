@@ -28,8 +28,8 @@ graph_encoder = 'GIN'
 number_epochs = int(1e5) # max epoch number
 PROB_THRESHOLD = 0.5
 
-leq_weight = 100 # penalty weight for atom or void per position constraints
-eq_weight = 100 # penalty weight for stoichiometry constraints
+leq_weight = 100  # penalty weight for atom or void per position constraints
+eq_weight = 100  # penalty weight for stoichiometry constraints
 
 # Early stopping to allow NN to train to near-completion
 tol = 1e-3         # loss must change by more than tol, or trigger
@@ -37,12 +37,12 @@ tol = 1e-3         # loss must change by more than tol, or trigger
 Gumbel_sinkhorn = True # if False Potts model, if True G.S. Potts
 # Set up problem to solve
 bqm_model = BQM(Potts = True, Gumbel_sinkhorn=Gumbel_sinkhorn)
-file_to_parse = 'SrTiO3G4.lp'
+file_to_parse = 'Y2O3G8.lp'
 struct_info = file_to_parse.split('G')
-struct_name = struct_info[0] #
-g = int(struct_info[1][0]) # cell discretization
+struct_name = struct_info[0]
+g = int(struct_info[1][0])  # cell discretization
 bqm_model.parse_lp("instances/" + file_to_parse)
-filename = file_to_parse.split('.')[0] + '_Train_' # for writing the Sinkhorn convergence iterations and temperature
+filename = file_to_parse.split('.')[0] + '_Train_'  # for writing the Sinkhorn convergence iterations and temperature
 with_void = True #
 # pre-constrained Q matrix
 Q, num_positions, atoms, stoich_const = qubo_to_torch(
@@ -53,12 +53,12 @@ edge_features = interactions_to_edge_features(Q, len(atoms))
 pos = crystal_coordinates(struct_name, g, num_positions) # atoms' candidate 3d coordinates within the unit cell #except for SrO
 
 n_atoms = len(atoms)
-num_classes = (n_atoms + 1) if with_void else n_atoms # number of node classes
-n = num_positions # number of graph nodes = number of crystal's positions
+num_classes = (n_atoms + 1) if with_void else n_atoms  # number of node classes
+n = num_positions  # number of graph nodes = number of crystal's positions
 print("Crystal Structure Prediction of " + file_to_parse.split('.')[0] + " with " + str(num_positions)
       + " positions" + " and " + str(atoms) + " atoms.")
 # Constructs a random d-regular or p-probabilistic graph
-lr_scheduler_type = "ReduceLRonPlateau" # learning rate scheduler
+lr_scheduler_type = "No"  # learning rate scheduler
 cutoff_dist = 3 if graph_type == "cutoff" else 0
 nx_graph = generate_graph(n=n, d=d, p=p, pos=pos, cutoff_dist=cutoff_dist,
                           graph_type=graph_type)
@@ -67,19 +67,19 @@ nx_graph = generate_graph(n=n, d=d, p=p, pos=pos, cutoff_dist=cutoff_dist,
 graph_dgl = dgl.from_networkx(nx_graph=nx_graph)
 graph_dgl = graph_dgl.to(TORCH_DEVICE)
 distvec = pdist(pos)
-square_dist = squareform(distvec) # square distance matrix between positions
-node_dist = list(square_dist.reshape(square_dist.shape[0]*square_dist.shape[1])) #flatten node distances
-node_dist = [i for i in node_dist if i != 0] # remove 0s
+square_dist = squareform(distvec)  # square distance matrix between positions
+node_dist = list(square_dist.reshape(square_dist.shape[0]*square_dist.shape[1]))  # flatten node distances
+node_dist = [i for i in node_dist if i != 0]  # remove 0s
 if cutoff_dist>0:
-    node_dist = [i for i in node_dist if i<cutoff_dist] # remove distances of nodes with distance greater than cutoff
+    node_dist = [i for i in node_dist if i < cutoff_dist]  # remove distances of nodes with distance greater than cutoff
 node_dist = torch.tensor(node_dist)
 gaussian_dist = gaussian_kernel(node_dist, sigma=1).to(TORCH_DEVICE)
 pos = torch.tensor((pos-np.min(pos))/(np.max(pos)-np.min(pos))).to(TORCH_DEVICE)
-graph_dgl.ndata['pos'] = torch.tensor(pos).type(TORCH_DTYPE) # add 3D coordinates as nodes' features
+graph_dgl.ndata['pos'] = torch.tensor(pos).type(TORCH_DTYPE)  # add 3D coordinates as nodes' features
 # graph_dgl.edata["interactions"] = edge_features.type(TORCH_DTYPE)
 graph_dgl.edata["edge_weights"] = gaussian_dist.type(TORCH_DTYPE)
 if graph_encoder == "GAT":
-    graph_dgl = dgl.add_self_loop(graph_dgl) # required for GAT
+    graph_dgl = dgl.add_self_loop(graph_dgl)  # required for GAT
 
 
 def model_step(hypers, Q, bqm_model, graph_dgl, torch_device, torch_dtype):
@@ -111,7 +111,7 @@ def model_step(hypers, Q, bqm_model, graph_dgl, torch_device, torch_dtype):
 
         # For tracking hyperparameters in results object
         gnn_hypers.update(opt_params)
-        file_to_write = filename + "temp_" + str(hypers["temperature"]) + "_"
+        file_to_write = filename + "_"
         gnn_start = time()
         probs, epoch, final_bitstring, best_bitstring = run_gnn_training(file_to_write,
             Q, bqm_model.offset, stoich_const, Gumbel_sinkhorn, graph_dgl, cutoff_dist, net, embed, optimizer,
@@ -137,7 +137,7 @@ def model_step(hypers, Q, bqm_model, graph_dgl, torch_device, torch_dtype):
             'status': STATUS_OK}
 
 
-patience = 1000 if Gumbel_sinkhorn else 10000
+patience = 2000 if Gumbel_sinkhorn else 10000
 agg_type = 'mean'
 search_space = {
     # Params to search over
@@ -146,9 +146,9 @@ search_space = {
     'dropout': scope.float(hp.uniform('dropout', 0.0, 0.5)),
     'weight_decay': scope.float(hp.loguniform('weight_decay', -5, -1)),
     'lr': scope.float(hp.loguniform('lr', -5, -2)),
-    'temperature': scope.float(hp.uniform('temperature', 1, 10)) if Gumbel_sinkhorn else scope.float(hp.uniform('temperature', 1.5, 3)),
+    'temperature': scope.float(hp.uniform('temperature', 100, 200)) if Gumbel_sinkhorn else scope.float(hp.uniform('temperature', 1.5, 3)),
     # 'scaling': scope.float(hp.uniform('scaling', 1, 2)) if Gumbel_sinkhorn else scope.float(hp.uniform('scaling', 0, 1)),
-    #possibly experiment with layer_agg_type
+    # possibly experiment with layer_agg_type
     # Fixed params - GNN
     'number_classes': num_classes,
     'prob_threshold': PROB_THRESHOLD,
@@ -171,7 +171,7 @@ obj_func = functools.partial(
 )
 # # do hpo
 file_to_write = file_to_parse.split('.')[0]
-num_searches = 1 # number of hyperparameters searches
+num_searches = 1  # number of hyperparameters searches
 scaling_str = "_no_scaling" if search_space["scaling"] == 1 else "_dynscal"
 print("Hyperparameter Search over " + str(num_searches) + " sets of hypers")
 filename = 'trials_file_GS_' + str(Gumbel_sinkhorn) + '_' + file_to_write + '_' + graph_encoder if graph_type == 'complete' \
