@@ -72,6 +72,8 @@ def Greedy_Baseline(file_to_parse, num_steps, num_seeds):
             bitstring[void_positions[pos_to_fill[0]], atom_type] = 1
             bitstring[void_positions[pos_to_fill[0]], -1] = 0
             if loss_func(Q, bitstring, bqm_model.offset) < best_loss[seed]: # update the best solution
+                bitstring_shrunk[pos_atom[pos_to_empty[0]]] = n_atoms
+                bitstring_shrunk[void_positions[pos_to_fill[0]]] = atom_type
                 best_loss[seed] = loss_func(Q, bitstring, bqm_model.offset)
                 loss.append(best_loss[seed])
                 best_bitstring = bitstring
@@ -150,12 +152,14 @@ def Simulated_Annealing(file_to_parse, temp_init, num_steps, num_seeds):
             bitstring[void_positions[pos_to_fill[0]], atom_type] = 1
             bitstring[void_positions[pos_to_fill[0]], -1] = 0
             new_loss = loss_func(Q, bitstring, bqm_model.offset)
-            temp *= 0.99
+            temp *= 0.9999
             if torch.exp((new_loss-current_loss)/temp)<0.5:
-                print(new_loss, current_loss, temp)
+                print(new_loss, current_loss, temp, step)
             if new_loss < current_loss or random.uniform(0, 1)<torch.exp((new_loss-current_loss)/temp): # update the solution
                 if new_loss < current_loss:
                     best_bitstring = bitstring
+                bitstring_shrunk[pos_atom[pos_to_empty[0]]] = n_atoms
+                bitstring_shrunk[void_positions[pos_to_fill[0]]] = atom_type
                 current_loss = new_loss
                 loss.append(current_loss)
                 change = pos_atom[pos_to_empty[0]]
@@ -178,7 +182,7 @@ def Simulated_Annealing(file_to_parse, temp_init, num_steps, num_seeds):
     print('Number of steps for each seed is: ' + str(num_steps))
     print('Ground state energy = ' + str(bqm_model.minimum_energy))
     print('Ground truth eV/atom = ' + str(bqm_model.minimum_energy/stoich_const[:-1].sum().item()))
-    print('Average Best loss = ' + str(np.mean(loss)) + ' , Standard deviation = ' + str(np.std(loss)))
+    print('Average Best loss = ' + str(np.mean(best_loss)) + ' , Standard deviation = ' + str(np.std(best_loss)))
     print('Best Loss = ' + str(np.min(best_loss)))
     print('Average Relative Optimality gap = ' + str(relative_optimality_gap.mean()) + ' , Standard deviation = ' + str(relative_optimality_gap.std()))
     print('Best Relative Optimality gap = ' + str(relative_optimality_gap.min()))
@@ -187,6 +191,6 @@ def Simulated_Annealing(file_to_parse, temp_init, num_steps, num_seeds):
     print('Average eV/atom = ' + str(ev_atom.mean()) + ' , Standard deviation = ' + str(ev_atom.std()))
     print('Average Time = ' + str(np.mean(run_time)) + ' , Standard deviation = ' + str(np.std(run_time)))
 
-# Greedy_Baseline(file_to_parse='SrTiO3G4.lp', num_steps=100000, num_seeds=10)
+# Greedy_Baseline(file_to_parse='SrTiO3G4.lp', num_steps=10000, num_seeds=10)
 print("---- ---- ---- ----")
-Simulated_Annealing(file_to_parse='SrTiO3G4.lp', temp_init=1e6, num_steps=10, num_seeds=5)
+Simulated_Annealing(file_to_parse='SrTiO3G4.lp', temp_init=1e6, num_steps=100000, num_seeds=5)
