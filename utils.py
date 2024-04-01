@@ -5,102 +5,9 @@ import networkx as nx
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.spatial.distance import pdist, squareform
-from scipy.optimize import linear_sum_assignment
-from dgl.nn.pytorch import GraphConv, SAGEConv
 from itertools import chain, islice
 from time import time
-
-
-
-# GNN class to be instantiated with specified param values
-class GCN_dev(nn.Module):
-    def __init__(self, in_feats, hidden_size, number_classes, dropout, temperature, device):
-        """
-        Initialize a new instance of the core GCN model of provided size.
-        Dropout is added in forward step.
-
-        Inputs:
-            in_feats: Dimension of the input (embedding) layer
-            hidden_size: Hidden layer size
-            dropout: Fraction of dropout to add between intermediate layer. Value is cached for later use.
-            device: Specifies device (CPU vs GPU) to load variables onto
-        """
-        super(GCN_dev, self).__init__()
-
-        self.dropout_frac = dropout
-        self.conv1 = GraphConv(in_feats, hidden_size).to(device)
-        self.conv2 = GraphConv(hidden_size, number_classes).to(device)
-        self.temperature_scaling = nn.Parameter(temperature*torch.ones(1)).to(device)
-
-    def forward(self, g, inputs):
-        """
-        Run forward propagation step of instantiated model.
-
-        Input:
-            self: GCN_dev instance
-            g: DGL graph object, i.e. problem definition
-            inputs: Input (embedding) layer weights, to be propagated through network
-        Output:
-            h: Output layer weights
-        """
-
-        # input step
-        h = self.conv1(g, inputs)
-        h = torch.relu(h)
-        h = F.dropout(h, p=self.dropout_frac)
-
-        # output step
-        h = self.conv2(g, h)
-        h = torch.div(h, self.temperature_scaling)
-        h = torch.sigmoid(h)
-
-
-        return h
-
-# GNN class to be instantiated with specified param values
-class GraphSAGE_dev(nn.Module):
-    def __init__(self, in_feats, hidden_size, aggregator, number_classes, dropout, temperature, device):
-        """
-        Initialize a new instance of the core GCN model of provided size.
-        Dropout is added in forward step.
-
-        Inputs:
-            in_feats: Dimension of the input (embedding) layer
-            hidden_size: Hidden layer size
-            dropout: Fraction of dropout to add between intermediate layer. Value is cached for later use.
-            device: Specifies device (CPU vs GPU) to load variables onto
-        """
-        super(GraphSAGE_dev, self).__init__()
-
-        self.dropout_frac = dropout
-        self.conv1 = SAGEConv(in_feats, hidden_size, aggregator).to(device)
-        self.conv2 = SAGEConv(hidden_size, number_classes, aggregator).to(device)
-        self.temperature_scaling = nn.Parameter(temperature*torch.ones(1)).to(device)
-
-    def forward(self, g, inputs):
-        """
-        Run forward propagation step of instantiated model.
-
-        Input:
-            self: GCN_dev instance
-            g: DGL graph object, i.e. problem definition
-            inputs: Input (embedding) layer weights, to be propagated through network
-        Output:
-            h: Output layer weights
-        """
-
-        # input step
-        h = self.conv1(g, inputs)
-        h = torch.relu(h)
-        h = F.dropout(h, p=self.dropout_frac)
-
-        # output step
-        h = self.conv2(g, h)
-        h = torch.div(h, self.temperature_scaling)
-        h = torch.sigmoid(h)
-
-        return h
-
+from models.models_dgl import GNNConv, GNNSage
 
 # Generate random graph of specified size and type,
 # with specified degree (d) or edge probability (p)
@@ -237,10 +144,10 @@ def get_gnn(n_nodes, graph_encoder, gnn_hypers, opt_params, scheduler_bool, torc
     temperature = gnn_hypers["temperature"]
     # instantiate the GNN
     if graph_encoder == 'GCN':
-        net = GCN_dev(dim_embedding, hidden_dim, number_classes, dropout, temperature, torch_device)
+        net = GNNConv(dim_embedding, hidden_dim, number_classes, dropout, temperature, torch_device)
     elif graph_encoder == 'GraphSAGE':
         aggregator = 'mean'
-        net = GraphSAGE_dev(dim_embedding, hidden_dim, aggregator, number_classes, dropout, temperature, torch_device)
+        net = GNNSage(dim_embedding, hidden_dim, aggregator, number_classes, dropout, temperature, torch_device)
     net = net.type(torch_dtype).to(torch_device)
     embed = nn.Embedding(n_nodes, dim_embedding)
     embed = embed.type(torch_dtype).to(torch_device)
@@ -359,6 +266,15 @@ def interactions_to_edge_features(Q, n_atoms):
     edge_features = torch.stack(edge_features, dim = 0)
     return F.normalize(edge_features, dim=0)
 
+def get_filename(struct_name, graph_encoder, cutoff_dist, lr_scheduler):
+    filename = struct_name + '_' + graph_encoder + '_'
+    if lr_scheduler is None:
+        filename += 'No_LRScheduler'
+    else:
+        filename += lr_scheduler
+    if cutoff_dist != 0:
+        filename += '_' + 'cutoff_' + str(cutoff_dist)
+    return filename
 
 
 

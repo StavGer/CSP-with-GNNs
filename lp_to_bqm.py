@@ -382,9 +382,9 @@ def qubo_to_torch(bqm_model, eq_inf, leq_infinity, with_void = False, Gumbel_sin
     #     C2diag = [idx for idx, key in enumerate(elements) if key == k]
     #     C2[C2diag, C2diag] = bqm_model.C2[k]
     Q_with_void = [[0]*n_total_variables]*n_total_variables
-    Qunc_with_void = [[0]*n_total_variables]*n_total_variables
-    C1_with_void = [[0]*n_total_variables]*n_total_variables
-    C2_with_void = [[0]*n_total_variables]*n_total_variables
+    # Qunc_with_void = [[0]*n_total_variables]*n_total_variables
+    # C1_with_void = [[0]*n_total_variables]*n_total_variables
+    # C2_with_void = [[0]*n_total_variables]*n_total_variables
     c = 0
     for i in range(n_total_variables):
         if i in range(n_atoms, n_total_variables, n_atoms + 1) :
@@ -429,10 +429,10 @@ def qubo_to_torch(bqm_model, eq_inf, leq_infinity, with_void = False, Gumbel_sin
     for i in range(1, len(bqm_model.constraints_dict)):
         if bqm_model.constraints_dict[i]['type'] == 'EQ':
             eq_const.append(bqm_model.constraints_dict[i]['rhs'])
-    stoich_const = torch.tensor(eq_const, dtype = Q.dtype, device = Q.get_device())
+    stoich_const = torch.tensor(eq_const, dtype = Q.dtype, device = torch_device)
     if with_void:
         eq_const.append(num_positions - sum(eq_const)) if num_positions - sum(eq_const) else eq_const.append(1e-10) # number of positions assigned to void
-        stoich_const = torch.tensor(eq_const, dtype = Q.dtype, device = Q.get_device())
+        stoich_const = torch.tensor(eq_const, dtype = Q.dtype, device = torch_device)
         return Q_with_void, num_positions, atoms, stoich_const
     else:
         return Q, num_positions, atoms, stoich_const

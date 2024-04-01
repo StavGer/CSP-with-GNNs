@@ -3,6 +3,8 @@ import torch
 import random
 import numpy as np
 import functools
+import argparse
+from pathlib import Path
 from hyperopt import tpe, hp, STATUS_OK, Trials
 from mltb.hyperopt import fmin
 from hyperopt.pyll import scope
@@ -14,9 +16,34 @@ TORCH_DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 TORCH_DTYPE = torch.float32
 print(f'Will use device: {TORCH_DEVICE}, torch dtype: {TORCH_DTYPE}')
 
-from utils import generate_graph, crystal_coordinates, gaussian_kernel, interactions_to_edge_features
+from utils import generate_graph, crystal_coordinates, gaussian_kernel, interactions_to_edge_features, get_filename
 from potts_utils import get_gnn, run_gnn_training, loss_func
 from lp_to_bqm import BQM, qubo_to_torch
+
+def get_arguments():
+    parser = argparse.ArgumentParser(
+        description="Perform Hyperparameter Search using Hyperopt"
+    )
+
+    # Instance
+    parser.add_argument("--instances-dir", type=Path, help="path to instance")
+
+    # Graph Encoder
+    parser.add_argument("--Graph-Encoder", type=str, default="GraphSAGE")
+
+    # LR scheduler
+    parser.add_argument("--LR Scheduler", type=str, default="None")
+
+    # Optim
+    parser.add_argument(
+        "--epochs",
+        default=1e5,
+        type=int,
+        metavar="N",
+        help="number of total epochs to run",
+    )
+    return parser
+
 
 # Graph hypers
 d = 3
@@ -24,7 +51,7 @@ p = None
 graph_type = 'complete'
 
 # GNN hypers
-graph_encoder = 'GIN'
+graph_encoder = 'GraphSAGE'
 number_epochs = int(1e5) # max epoch number
 PROB_THRESHOLD = 0.5
 
@@ -37,12 +64,13 @@ tol = 1e-3         # loss must change by more than tol, or trigger
 Gumbel_sinkhorn = True # if False Potts model, if True G.S. Potts
 # Set up problem to solve
 bqm_model = BQM(Potts = True, Gumbel_sinkhorn=Gumbel_sinkhorn)
-file_to_parse = 'Y2O3G8.lp'
+file_to_parse = 'Y2Ti2O7G8.lp'
 struct_info = file_to_parse.split('G')
 struct_name = struct_info[0]
 g = int(struct_info[1][0])  # cell discretization
 bqm_model.parse_lp("instances/" + file_to_parse)
 filename = file_to_parse.split('.')[0] + '_Train_'  # for writing the Sinkhorn convergence iterations and temperature
+struct_with_g = file_to_parse.split('.')[0]
 with_void = True #
 # pre-constrained Q matrix
 Q, num_positions, atoms, stoich_const = qubo_to_torch(
@@ -113,7 +141,7 @@ def model_step(hypers, Q, bqm_model, graph_dgl, torch_device, torch_dtype):
         gnn_hypers.update(opt_params)
         file_to_write = filename + "_"
         gnn_start = time()
-        probs, epoch, final_bitstring, best_bitstring = run_gnn_training(file_to_write,
+        probs, epoch, final_bitstring, best_bitstring, _ = run_gnn_training(file_to_write,
             Q, bqm_model.offset, stoich_const, Gumbel_sinkhorn, graph_dgl, cutoff_dist, net, embed, optimizer,
                                                                          lr_scheduler, hypers["temperature"],
                                                                          hypers["scaling"],
@@ -137,7 +165,7 @@ def model_step(hypers, Q, bqm_model, graph_dgl, torch_device, torch_dtype):
             'status': STATUS_OK}
 
 
-patience = 2000 if Gumbel_sinkhorn else 10000
+patience = 1000 if Gumbel_sinkhorn else 10000
 agg_type = 'mean'
 search_space = {
     # Params to search over
@@ -146,8 +174,8 @@ search_space = {
     'dropout': scope.float(hp.uniform('dropout', 0.0, 0.5)),
     'weight_decay': scope.float(hp.loguniform('weight_decay', -5, -1)),
     'lr': scope.float(hp.loguniform('lr', -5, -2)),
-    'temperature': scope.float(hp.uniform('temperature', 100, 200)) if Gumbel_sinkhorn else scope.float(hp.uniform('temperature', 1.5, 3)),
-    # 'scaling': scope.float(hp.uniform('scaling', 1, 2)) if Gumbel_sinkhorn else scope.float(hp.uniform('scaling', 0, 1)),
+    'temperature': scope.float(hp.uniform('temperature', 0.01, 1)) if Gumbel_sinkhorn else scope.float(hp.uniform('temperature', 1.5, 3)),
+    'scaling': scope.float(hp.uniform('scaling', 1, 2)) if Gumbel_sinkhorn else scope.float(hp.uniform('scaling', 0, 1)),
     # possibly experiment with layer_agg_type
     # Fixed params - GNN
     'number_classes': num_classes,
@@ -160,7 +188,7 @@ search_space = {
     # Fixed params - problem
     'scheduler': lr_scheduler_type,
     'leq_weight': leq_weight,
-    'scaling' : 1.1,
+    # 'scaling' : 1.1,
     'eq_weight': eq_weight
 }
 
@@ -174,8 +202,9 @@ file_to_write = file_to_parse.split('.')[0]
 num_searches = 1  # number of hyperparameters searches
 scaling_str = "_no_scaling" if search_space["scaling"] == 1 else "_dynscal"
 print("Hyperparameter Search over " + str(num_searches) + " sets of hypers")
-filename = 'trials_file_GS_' + str(Gumbel_sinkhorn) + '_' + file_to_write + '_' + graph_encoder if graph_type == 'complete' \
-    else 'trials_file_GS_' + str(Gumbel_sinkhorn) + '_' + file_to_write + '_cutoff_' + str(cutoff_dist) + '_' + graph_encoder
+# filename = 'trials_file_GS_' + str(Gumbel_sinkhorn) + '_' + file_to_write + '_' + graph_encoder if graph_type == 'complete' \
+#     else 'trials_file_GS_' + str(Gumbel_sinkhorn) + '_' + file_to_write + '_cutoff_' + str(cutoff_dist) + '_' + graph_encoder
+filename = get_filename(struct_with_g, graph_encoder, cutoff_dist, lr_scheduler_type)
 best, trials = fmin(
     obj_func,
     space=search_space,

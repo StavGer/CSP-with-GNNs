@@ -4,10 +4,14 @@ import random
 import numpy as np
 import networkx as nx
 import matplotlib
+import matplotlib.pyplot as plt
+import os
 from time import time
 from scipy.spatial.distance import pdist, squareform
 import joblib
+import seaborn as sns
 
+colors = ['red', 'blue', 'green', 'yellow']
 print(torch.__version__)
 print(dgl.__version__)
 print(nx.__version__)
@@ -21,7 +25,7 @@ TORCH_DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 TORCH_DTYPE = torch.float32
 print(f'Will use device: {TORCH_DEVICE}, torch dtype: {TORCH_DTYPE}')
 
-from utils import generate_graph, crystal_coordinates, gaussian_kernel
+from utils import generate_graph, crystal_coordinates, gaussian_kernel, get_filename
 from potts_utils import get_gnn, run_gnn_training, loss_func
 from lp_to_bqm import BQM, qubo_to_torch
 
@@ -30,8 +34,8 @@ file_to_parse = 'SrTiO3G4.lp'
 struct_info = file_to_parse.split('G')
 struct_name = struct_info[0] #
 g = int(struct_info[1][0])  # cell discretization
-file_to_write = file_to_parse.split('.')[0]
-filename = file_to_write + '_Test'
+structure_with_g = file_to_parse.split('.')[0]
+filename = structure_with_g + '_Test'
 
 bqm_model = BQM(Potts = True, Gumbel_sinkhorn = Gumbel_sinkhorn)
 bqm_model.parse_lp("instances/" + file_to_parse)
@@ -47,14 +51,14 @@ PROB_THRESHOLD = 0.5
 sparsity_threshold = 0.0
 leq_weight = 200  # penalty weight for atom or void per position constraints for Potts model
 eq_weight = 200  # penalty weight for stoichiometry constraints for Potts model
-lr_scheduler_type = "Cosine Annealing"  # learning rate scheduler
+lr_scheduler_type = "No"  # learning rate scheduler
 cutoff_dist = 5 if graph_type == "cutoff" else 0
 temp_scaling = False
 scaling_str = "_dynscal" if temp_scaling else "_no_scaling"
-trials_filename = 'trials_file_GS_' + str(Gumbel_sinkhorn) + '_' + file_to_write if graph_type=='complete' \
-    else 'trials_file_GS_' + str(Gumbel_sinkhorn) + '_' + file_to_write + scaling_str + str(cutoff_dist)
+trials_filename = 'trials_file_GS_' + str(Gumbel_sinkhorn) + '_' + structure_with_g if graph_type=='complete' \
+    else 'trials_file_GS_' + str(Gumbel_sinkhorn) + '_' + structure_with_g + scaling_str + str(cutoff_dist)
 trials_history = joblib.load(trials_filename)
-
+l = get_filename(struct_name, graph_encoder, cutoff_dist, lr_scheduler_type)
 # In case we want to inspect more models rather than just the best one
 losses = []
 for i in range(len(trials_history)):
@@ -149,6 +153,7 @@ gnn_hypers = {
 num_tests = 10 # number of seeds to test
 best_hard_loss = np.zeros((num_tests, 1))
 final_hard_loss = np.zeros((num_tests, 1))
+ev_atom = np.zeros((num_tests, 1))
 gnn_time = np.zeros((num_tests, 1))
 min_energy_found = 0
 relative_optimality_gap = np.zeros((num_tests, 1))
@@ -156,6 +161,24 @@ best_bitstring = []
 deg = nx_graph.degree
 avg_degree = sum([i[1] for i in deg])/nx_graph.number_of_nodes()  # average graph degree
 graph_density = nx_graph.number_of_edges()/(nx_graph.number_of_nodes()*(nx_graph.number_of_nodes()-1)/2)
+heatmap_folder_bitstring = l + '_Bitstring_Variance'
+heatmap_folder_probs = l + '_Probs_Variance'
+bitstring_changes_folder = l + '_Bitstring_Change'
+unique_nodes_folder = l + 'Unique_nodes'
+assgnmnts_change_folder = l + '_Assgns_change'
+unique_pos_change_folder = l + '_unique_pos'
+if not os.path.exists(unique_nodes_folder):
+    os.makedirs(unique_nodes_folder)
+if not os.path.exists(heatmap_folder_bitstring):
+    os.makedirs(heatmap_folder_bitstring)
+if not os.path.exists(heatmap_folder_probs):
+    os.makedirs(heatmap_folder_probs)
+if not os.path.exists(bitstring_changes_folder):
+    os.makedirs(bitstring_changes_folder)
+if not os.path.exists(assgnmnts_change_folder):
+    os.makedirs(assgnmnts_change_folder)
+if not os.path.exists(unique_pos_change_folder):
+    os.makedirs(unique_pos_change_folder)
 for seed_value in range(10, 10 + num_tests):
     random.seed(seed_value)        # seed python RNG
     np.random.seed(seed_value)     # seed global NumPy RNG
@@ -168,24 +191,67 @@ for seed_value in range(10, 10 + num_tests):
     print('Running GNN...')
     gnn_start = time()
 
-    probs, epoch, final_bitstring, best_bitstring_seed = run_gnn_training(filename, Q, bqm_model.offset, stoich_const,
+    probs, best_loss_epoch, final_bitstring, best_bitstring_seed, probs_save, bitstring_save, assgnmnts_change, assgnd_nodes_num, unique_pos_per_atom = run_gnn_training(filename, Q, bqm_model.offset, stoich_const,
                                                                      Gumbel_sinkhorn, graph_dgl, cutoff_dist, net,
                                                                      embed, optimizer, lr_scheduler, hypers["temperature"],
-                                                                    hypers["scaling"], hypers['number_epochs'],
+                                                                    hypers["scaling"], hypers["number_epochs"],
                                                                      hypers['patience'], hypers['tolerance'],
                                                                      flag = True, seed = seed_value)
-
+    plt.close('all')
+    fig, ax = plt.subplots(figsize=(24, 18))
+    heatmap_file = str(seed_value) + '.png'
+    for atom_index in range(unique_pos_per_atom.shape[0]):
+        plt.tight_layout()
+        plt.plot(np.arange(unique_pos_per_atom.shape[1]), unique_pos_per_atom[atom_index, :])
+        plt.savefig(os.path.join(unique_pos_change_folder, '_atom_' + str(atom_index) + '_' + str(seed_value) + heatmap_file))
+        plt.close('all')
+    fig, ax = plt.subplots(figsize=(24, 18))
+    for atom_index in range(assgnmnts_change.shape[1]):
+        plt.tight_layout()
+        plt.plot(np.arange(assgnmnts_change.shape[0]), assgnmnts_change[:, atom_index])
+        plt.savefig(os.path.join(assgnmnts_change_folder, '_atom_' + str(atom_index) + '_' + str(seed_value) + heatmap_file))
+        plt.close('all')
+    fig, ax = plt.subplots(figsize=(24, 18))
+    unique_nodes = np.array(assgnd_nodes_num)
+    epochs = np.arange(unique_nodes.shape[0])
+    plt.plot(epochs, unique_nodes, color = 'blue')
+    plt.savefig(os.path.join(unique_nodes_folder, heatmap_file))
+    plt.close('all')
+    fig, ax = plt.subplots(figsize=(24, 18))
+    for atom_index in range(bitstring_save.shape[2]-1):
+        z = bitstring_save.float()[:,:, atom_index]
+        c = torch.where(z == 1)
+        index_epoch = torch.stack(c).cpu().numpy()
+        plt.tight_layout()
+        plt.scatter(index_epoch[0, :], index_epoch[1, :], marker ='.', color = colors[atom_index])
+    plt.yticks(np.arange(0, num_positions, 3))
+    plt.xticks(best_loss_epoch)
+    plt.xticks(np.arange(0, epochs, 100))
+    plt.savefig(os.path.join(bitstring_changes_folder, heatmap_file))
+    plt.close('all')
+    fig, ax = plt.subplots(figsize=(24, 18))
+    bitstring_var = torch.var(bitstring_save.float(), dim=0)
+    probs_var = torch.var(probs_save.float(), dim=0)
+    hm = sns.heatmap(bitstring_var.cpu().numpy(), vmin=0, cmap=plt.cm.Blues)
+    heatmap_file = str(seed_value) + '.png'
+    plt.savefig(os.path.join(heatmap_folder_bitstring, heatmap_file))
+    plt.close('all')
+    fig, ax = plt.subplots(figsize=(24, 18))
+    hm = sns.heatmap(probs_var.cpu().numpy(), vmin=0, cmap=plt.cm.Blues)
+    plt.savefig(os.path.join(heatmap_folder_probs, heatmap_file))
+    plt.close('all')
     gnn_time[seed_value - 10] = time() - gnn_start
     best_bitstring.append(best_bitstring_seed.float())
     final_hard_loss[seed_value - 10] = loss_func(Q, final_bitstring.float(), bqm_model.offset).item()
     best_hard_loss[seed_value - 10] = loss_func(Q, best_bitstring_seed.float(), bqm_model.offset).item()
     relative_optimality_gap[seed_value - 10] = \
         (bqm_model.minimum_energy - best_hard_loss[seed_value - 10])/bqm_model.minimum_energy
+    ev_atom[seed_value - 10] = best_hard_loss[seed_value - 10]/stoich_const[:-1].sum().item()
     if np.round(best_hard_loss[seed_value - 10], 3) == bqm_model.minimum_energy:
         min_energy_found += 1
 with open('Results/' + trials_filename + '.txt', 'w') as f:
-    # add model's parameters
     f.write('Ground state energy = ' + str(bqm_model.minimum_energy) + '\n')
+    f.write('Ground truth eV/atom = ' + str(bqm_model.minimum_energy/stoich_const[:-1].sum().item()) + '\n')
     f.write("Number of correct assignments\n")
     for i in range(len(atoms)):
         f.write(str(int(stoich_const[i].item())) + " atom(s) of " + atoms[i] + '\n')
@@ -221,6 +287,8 @@ with open('Results/' + trials_filename + '.txt', 'w') as f:
             ' , Standard deviation = ' + str(relative_optimality_gap.std()) + '\n')
     f.write('Average Time = ' + str(gnn_time.mean()) + ' , Standard deviation = ' + str(gnn_time.std()) + '\n')
     f.write('Hit rate = ' + str((min_energy_found/num_tests)*100) + '%')
+    f.write('Minimum eV/atom = ' + str(min(ev_atom)) + '\n')
+    f.write('Average eV/atom = ' + str(ev_atom.mean()) + ' , Standard deviation = ' + str(ev_atom.std()) + '\n')
 print('Ground state energy = ', bqm_model.minimum_energy)
 print('Average Best Hard loss = ' + str(best_hard_loss.mean()) + ' , Standard deviation = ' + str(best_hard_loss.std()))
 print('Best Hard Loss = ' + str(min(best_hard_loss)))

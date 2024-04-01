@@ -6,15 +6,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import math
-from dgl.nn.pytorch import SAGEConv, GraphConv, GATConv, GINConv
+from models.models_pyg import SAGE_with_EdgeConv
+from models.models_dgl import GIN, GATnet, GNNConv, GNNSage
 from itertools import chain
 import torch.optim as optim
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
-from torch_geometric.nn.conv import MessagePassing
-from torch_geometric.nn.dense.linear import Linear
-import networkx as nx
-
+from scipy.stats import entropy
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -31,291 +29,7 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-
-# Define GNN GraphSage object
-class GNNSage(nn.Module):
-    """
-    Basic GraphSAGE-based GNN class object. Constructs the model architecture upon
-    initialization. Defines a forward step to include relevant parameters - in this
-    case, just dropout.
-    """
-
-    def __init__(self, g, in_feats, hidden_size, num_classes, dropout, agg_type='mean'):
-        """
-        Initialize the model object. Establishes model architecture and relevant hypers (`dropout`, `num_classes`, `agg_type`)
-
-        :param g: Input graph object
-        :type g: dgl.DGLHeteroGraph
-        :param in_feats: Size (number of nodes) of input layer
-        :type in_feats: int
-        :param hidden_size: Size of hidden layer
-        :type hidden_size: int
-        :param num_classes: Size of output layer (one node per class)
-        :type num_classes: int
-        :param dropout: Dropout fraction, between two convolutional layers
-        :type dropout: float
-        :param agg_type: Aggregation type for each SAGEConv layer. All layers will use the same agg_type
-        :type agg_type: str
-        """
-
-        super(GNNSage, self).__init__()
-
-        self.g = g
-        self.edge_weights = self.g.edata["edge_weights"]
-        self.num_classes = num_classes
-
-        self.layers = nn.ModuleList()
-        # input layer
-        self.layers.append(SAGEConv(in_feats, hidden_size, agg_type, activation=F.relu))
-        # output layer
-        self.layers.append(SAGEConv(hidden_size, num_classes, agg_type))
-        self.dropout = nn.Dropout(p=dropout)
-
-    def forward(self, features):
-        """
-        Define forward step of netowrk. In this example, pass inputs through convolution, apply relu
-        and dropout, then pass through second convolution.
-
-        :param features: Input node representations
-        :type features: torch.tensor
-        :return: Final layer representation, pre-activation (i.e. class logits)
-        :rtype: torch.tensor
-        """
-        h = features
-        for i, layer in enumerate(self.layers):
-            if i != 0:
-                h = self.dropout(h)
-            h = layer(self.g, h, self.edge_weights)
-
-        return h
-
-# Define GNN GraphSage object
-class GATnet(nn.Module):
-    """
-    Basic GAT-based GNN class object. Constructs the model architecture upon
-    initialization. Defines a forward step to include relevant parameters - in this
-    case, just dropout.
-    """
-
-    def __init__(self, g, in_feats, hidden_size, num_heads, num_classes, dropout):
-        """
-        Initialize the model object. Establishes model architecture and relevant hypers (`dropout`, `num_classes`, `agg_type`)
-
-        :param g: Input graph object
-        :type g: dgl.DGLHeteroGraph
-        :param in_feats: Size (number of nodes) of input layer
-        :type in_feats: int
-        :param hidden_size: Size of hidden layer
-        :type hidden_size: int
-        :param num_classes: Size of output layer (one node per class)
-        :type num_classes: int
-        :param dropout: Dropout fraction, between two convolutional layers
-        :type dropout: float
-        :param agg_type: Aggregation type for each SAGEConv layer. All layers will use the same agg_type
-        :type agg_type: str
-        """
-
-        super(GATnet, self).__init__()
-
-        self.g = g
-        self.num_classes = num_classes
-
-        self.layers = nn.ModuleList()
-        self.num_heads = num_heads
-        # input layer
-        self.layers.append(GATConv(in_feats, hidden_size, num_heads, activation=F.relu))
-        # output layer
-        self.layers.append(GATConv(hidden_size*num_heads , num_classes, num_heads=1))
-        self.dropout = nn.Dropout(p=dropout)
-
-    def forward(self, features):
-        """
-        Define forward step of netowrk. In this example, pass inputs through convolution, apply relu
-        and dropout, then pass through second convolution.
-
-        :param features: Input node representations
-        :type features: torch.tensor
-        :return: Final layer representation, pre-activation (i.e. class logits)
-        :rtype: torch.tensor
-        """
-        h = features
-        for i, layer in enumerate(self.layers):
-            h = layer(self.g, h)
-            if i == 1:  # last layer
-                h = h.mean(1)
-            else:  # other layer(s)
-                h = h.flatten(1)
-
-        return h
-
-class MLP(nn.Module):
-    """Construct two-layer MLP-type aggreator for GIN model"""
-
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super().__init__()
-        self.linears = nn.ModuleList()
-        # two-layer MLP
-        self.linears.append(nn.Linear(input_dim, hidden_dim, bias=False))
-        self.linears.append(nn.Linear(hidden_dim, output_dim, bias=False))
-        self.batch_norm = nn.BatchNorm1d((hidden_dim))
-
-    def forward(self, x):
-        h = x
-        h = F.relu(self.batch_norm(self.linears[0](h)))
-        return self.linears[1](h)
-
-
-class GIN(nn.Module):
-    """Copied and modified by https://github.com/dmlc/dgl/blob/master/examples/pytorch/gin/train.py"""
-    def __init__(self, g, input_dim, hidden_dim, output_dim, dropout):
-        super().__init__()
-        self.g = g
-        self.ginlayers = nn.ModuleList()
-        self.batch_norms = nn.ModuleList()
-        num_layers = 2
-        # two-layer GCN with two-layer MLP aggregator and sum-neighbor-pooling scheme
-        for layer in range(num_layers - 1):  # excluding the input layer
-            if layer == 0:
-                mlp = MLP(input_dim, hidden_dim, hidden_dim)
-            else:
-                mlp = MLP(hidden_dim, hidden_dim, hidden_dim)
-            self.ginlayers.append(
-                GINConv(mlp, learn_eps=False)
-            )  # set to True if learning epsilon
-            self.batch_norms.append(nn.BatchNorm1d(hidden_dim))
-        self.linear_prediction = nn.ModuleList()
-        for layer in range(num_layers):
-            if layer == 0:
-                self.linear_prediction.append(nn.Linear(hidden_dim, hidden_dim))
-            else:
-                self.linear_prediction.append(nn.Linear(hidden_dim, output_dim))
-        self.drop = nn.Dropout(dropout)
-
-    def forward(self, h):
-        # list of hidden representation at each layer (including the input layer)
-        hidden_rep = [h]
-        for i, layer in enumerate(self.ginlayers):
-            h = layer(self.g, h)
-            h = self.batch_norms[i](h)
-            h = F.relu(h)
-            hidden_rep.append(h)
-        h = F.relu(self.linear_prediction[0](h))
-        h = self.drop(self.linear_prediction[1](h))
-        return h
-
-
-
-# Define GNN GraphConv object
-class GNNConv(nn.Module):
-    """
-    Basic GraphConv-based GNN class object. Constructs the model architecture upon
-    initialization. Defines a forward step to include relevant parameters - in this
-    case, just dropout.
-    """
-
-    def __init__(self, g, in_feats, hidden_size, num_classes, dropout):
-        """
-        Initialize the model object. Establishes model architecture and relevant hypers (`dropout`, `num_classes`, `agg_type`)
-
-        :param g: Input graph object
-        :type g: dgl.DGLHeteroGraph
-        :param in_feats: Size (number of nodes) of input layer
-        :type in_feats: int
-        :param hidden_size: Size of hidden layer
-        :type hidden_size: int
-        :param num_classes: Size of output layer (one node per class)
-        :type num_classes: int
-        :param dropout: Dropout fraction, between two convolutional layers
-        :type dropout: float
-        """
-
-        super(GNNConv, self).__init__()
-        self.g = g
-        self.layers = nn.ModuleList()
-        # input layer
-        self.layers.append(GraphConv(in_feats, hidden_size, activation=F.relu))
-        # output layer
-        self.layers.append(GraphConv(hidden_size, num_classes))
-        self.dropout = nn.Dropout(p=dropout)
-
-    def forward(self, features):
-        """
-        Define forward step of netowrk. In this example, pass inputs through convolution, apply relu
-        and dropout, then pass through second convolution.
-
-        :param features: Input node representations
-        :type features: torch.tensor
-        :return: Final layer representation, pre-activation (i.e. class logits)
-        :rtype: torch.tensor
-        """
-
-        h = features
-        for i, layer in enumerate(self.layers):
-            if i != 0:
-                h = self.dropout(h)
-            h = layer(self.g, h)
-        return h
-
-
-class SAGECONV_edges(MessagePassing):
-
-    def __init__(self,
-                 in_channels_feats,
-                 in_channels_edges,
-                 out_channels,
-                 agg_type='mean',
-                 root_weight = True):
-
-        super(SAGECONV_edges, self).__init__()
-
-        self.in_channels_feats = in_channels_feats
-        self.in_channels_edges = in_channels_edges
-        self.out_channels = out_channels
-        self.aggr = agg_type
-        self.root_weight = root_weight
-        self.lin1 = Linear(in_channels_edges + in_channels_feats, out_channels, bias=True)
-        self.lin2 = Linear(in_channels_feats, out_channels, bias=True)
-
-
-    def forward(self, x, edge_index, edge_attr):
-        out = self.propagate(edge_index, x=x, edge_attr=edge_attr)
-        return self.lin2(x) + out
-
-    def message(self, x_j, edge_attr):
-        return self.lin1(torch.cat([x_j, edge_attr], dim=-1))
-
-class SAGE_with_EdgeConv(torch.nn.Module):
-
-    def __init__(self, num_in_channels_feats: int, num_in_channels_edges: int, hidden_dim: int,
-                 num_out_channels: int, dropout):
-
-        super(SAGE_with_EdgeConv, self).__init__()
-
-        self.num_in_channels_feats = num_in_channels_feats
-        self.num_in_channels_edges = num_in_channels_edges
-        self.hidden_dim = hidden_dim
-        self.num_out_channels = num_out_channels
-        self.dropout = nn.Dropout(p=dropout)
-
-        self.layers = nn.ModuleList()
-        # input layer
-        self.layers.append(SAGECONV_edges(self.num_in_channels_feats, self.num_in_channels_edges, self.hidden_dim))
-        # output layer
-        self.layers.append(SAGECONV_edges(self.hidden_dim, self.num_in_channels_edges, self.num_out_channels))
-
-
-    def forward(self, data):
-        x = data.x
-        for i, layer in enumerate(self.layers):
-            if i != 0:
-                x = self.dropout(x)
-            x = layer(x, data.edge_index, data.edge_attr)
-            if i !=1:
-                x = F.relu(x)
-        return x
-
-
-# Construct graph to learn on #
+# GNN construction
 def get_gnn(g, n_nodes, gnn_hypers, opt_params, lr_scheduler_type, torch_device, torch_dtype):
     """
     Helper function to load in GNN object, optimizer, and initial embedding layer.
@@ -373,8 +87,8 @@ def get_gnn(g, n_nodes, gnn_hypers, opt_params, lr_scheduler_type, torch_device,
     print('Building ADAM-W optimizer...')
     optimizer = torch.optim.AdamW(params, **opt_params)
     # optimizer = torch.optim.SGD(params, **opt_params)
-    if lr_scheduler_type == "ReduceLRonPlateau":
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=100, verbose=True)
+    if lr_scheduler_type == "Plateau" :
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=100)
     elif lr_scheduler_type == "Cosine Warmup":
         scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
@@ -460,7 +174,7 @@ def get_cosine_with_hard_restarts_schedule_with_warmup(
             return 0.0
         return max(0.0, 0.5 * (1.0 + math.cos(math.pi * ((float(num_cycles) * progress) % 1.0))))
 
-    return LambdaLR(optimizer, lr_lambda, last_epoch, verbose = True)
+    return LambdaLR(optimizer, lr_lambda, last_epoch)
 
 
 def loss_func(Q, probs, offset):
@@ -471,7 +185,7 @@ def loss_func(Q, probs, offset):
     loss = torch.unsqueeze(p, 0)@torch.unsqueeze(Q_flatten, 1) + offset
     return loss
 
-def log_sinkhorn(log_alpha, r, n_iter,  eps = 0.01):
+def log_sinkhorn(log_alpha, r, n_iter,  eps = 0.05):
     """Performs incomplete Sinkhorn normalization to log_alpha.
     By a theorem by Sinkhorn and Knopp [1], a sufficiently well-behaved  matrix
     with positive entries can be turned into a doubly-stochastic matrix
@@ -490,15 +204,18 @@ def log_sinkhorn(log_alpha, r, n_iter,  eps = 0.01):
       A 3D tensor of close-to-doubly-stochastic matrices (2D tensors are
         converted to 3D tensors with batch_size equals to 1)
     """
-
+    stop = 0
     for i in range(n_iter):
+        prev_log_alpha = log_alpha
         log_alpha = log_alpha - torch.logsumexp(log_alpha, -1, keepdim=True)
         log_alpha = torch.log(r) + log_alpha - torch.logsumexp(log_alpha, -2, keepdim=True)
         alpha = log_alpha.exp()
-        violations_r = torch.where(torch.abs(alpha.sum(dim = -1) - 1) > eps) # row sum violations
-        violations_c = torch.where(torch.abs(alpha.sum(dim = -2) - r) > eps) # column sum violations
-        if (len(violations_r[0]) == 0 and len(violations_c[0]) == 0) :
-            break
+        violations_r = torch.where(torch.abs(alpha.sum(dim = -1) - 1) > eps) #row sum violations
+        violations_c = torch.where(torch.abs(alpha.sum(dim = -2) - r) > eps) #column sum violations
+        if (len(violations_r[0]) == 0 and len(violations_c[0]) == 0) or torch.max(torch.abs(log_alpha-prev_log_alpha)) < 1e-5:
+            stop+=1
+            if stop==100:
+                break
         if i == n_iter - 1:
             print('Sinkhorn did not converge!')
     return alpha, i
@@ -526,7 +243,6 @@ def gumbel_sinkhorn(log_alpha, stoich_const, tau, n_iter):
     """
     # Sample Gumbel noise.
     gumbel_noise = sample_gumbel(log_alpha.shape, device=log_alpha.device)
-
     # Apply the Sinkhorn operator!
     sampled_perm_mat = log_sinkhorn((log_alpha + gumbel_noise)/tau, stoich_const, n_iter)
     return sampled_perm_mat
@@ -579,6 +295,13 @@ def run_gnn_training(filename, Q, offset, stoich_const, Gumbel_sinkhorn, graph_d
     # Training logic
     assgnmnts_change = []
     bitstring_o = bitstring
+    probs_save = []
+    bitstring_save = []
+    i = 0
+    assgnd_nodes = torch.tensor([], device=graph_dgl.device)
+    assgnd_nodes_num = []
+    pos_ind_per_atom= [torch.tensor([], device= 'cuda') for i in range(stoich_const.shape[0])]
+    unique_pos_per_atom = [[] for i in range(stoich_const.shape[0])]
     for epoch in range(number_epochs):
         # get soft prob assignments
         # logits = net(graph_dgl) for GAT
@@ -586,9 +309,9 @@ def run_gnn_training(filename, Q, offset, stoich_const, Gumbel_sinkhorn, graph_d
         if Gumbel_sinkhorn:
             if flag:
                 temp_logger.append(t.item())
-            if i>=1000:
-                t = scaling*t
-                print("Temperature scaled by " + str(scaling) + ' ,t = ' + str(t))
+            # if i>=1000:
+            #     t = scaling*t
+            #     print("Temperature scaled by " + str(scaling) + ' ,t = ' + str(t))
             probs, i = gumbel_sinkhorn(logits, stoich_const, tau=t, n_iter=50000)
             if flag: gs_iters.append(i)
         else:
@@ -601,9 +324,17 @@ def run_gnn_training(filename, Q, offset, stoich_const, Gumbel_sinkhorn, graph_d
         loss = loss_func(Q, probs, offset)
         # t = torch.maximum(t * torch.exp(torch.tensor(-ANNEAL_RATE * epoch)), temp_min)
         bitstring_n = (probs.detach() >= prob_threshold) * 1
+        probs_save.append(probs.detach())
+        bitstring_save.append(bitstring_n.detach())
         changes = bitstring_n.type(torch.uint8) ^ bitstring_o.type(torch.uint8)
-        assgnmnts_change.append([torch.where(changes[:, col] == 1)[0].numel() for col in range(bitstring.shape[1]-1)])
-
+        assgnmnts_change.append(torch.tensor([torch.where(changes[:, col] == 1)[0].numel() for col in range(bitstring.shape[1])]))
+        for atom_index in range(bitstring_n.shape[1]):
+            z = torch.where(bitstring_n[:, atom_index]==1)[0]
+            pos_ind_per_atom[atom_index] = torch.cat((pos_ind_per_atom[atom_index], z))
+            unique_pos_per_atom[atom_index].append(torch.tensor(torch.unique(pos_ind_per_atom[atom_index]).shape))
+        z = torch.where(bitstring_n[:, :bitstring_n.shape[1]-1]==1)[0]
+        assgnd_nodes = torch.cat((assgnd_nodes, z))
+        assgnd_nodes_num.append(torch.tensor(torch.unique(assgnd_nodes).shape))
         # a different projector from probs to bitstring
         # for i,l in enumerate(stoich_const):
         #     s, indices = torch.sort(probs[:, i])
@@ -666,5 +397,12 @@ def run_gnn_training(filename, Q, offset, stoich_const, Gumbel_sinkhorn, graph_d
     print('Last Epoch %d | Final Soft loss: %.5f' % (epoch, loss.item()))
     print('Best Loss Epoch %d | Best Soft loss: %.5f' % (best_loss_epoch, best_loss.item()))
     # Final coloring
-    final_bitstring = bitstring
-    return probs, epoch, final_bitstring, best_bitstring, assgnmnts_change
+    for atom_index in range(bitstring_n.shape[1]):
+        unique_pos_per_atom[atom_index]= torch.stack(unique_pos_per_atom[atom_index])
+    unique_pos_per_atom = torch.squeeze(torch.stack(unique_pos_per_atom))
+    probs_save = torch.stack(probs_save)
+    bitstring_save = torch.stack(bitstring_save)
+    assgnmnts_change = torch.stack(assgnmnts_change)
+    assgnd_nodes_num = torch.stack(assgnd_nodes_num)
+    final_bitstring = bitstring_n
+    return probs, best_loss_epoch, final_bitstring, best_bitstring, probs_save, bitstring_save, assgnmnts_change, assgnd_nodes_num, unique_pos_per_atom
