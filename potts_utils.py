@@ -16,6 +16,7 @@ from scipy.stats import entropy
 
 torch.autograd.set_detect_anomaly(True)
 
+
 def set_seed(seed):
     """
     Sets random seeds for training.
@@ -28,6 +29,7 @@ def set_seed(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
 
 # GNN construction
 def get_gnn(g, n_nodes, gnn_hypers, opt_params, lr_scheduler_type, torch_device, torch_dtype):
@@ -106,6 +108,7 @@ def get_gnn(g, n_nodes, gnn_hypers, opt_params, lr_scheduler_type, torch_device,
         scheduler = None
     return net, embed, optimizer, scheduler
 
+
 def get_cosine_schedule_with_warmup(
         optimizer: Optimizer, num_warmup_steps: int, num_training_steps: int,
         num_cycles: float = 0.5, last_epoch: int = -1):
@@ -177,13 +180,18 @@ def get_cosine_with_hard_restarts_schedule_with_warmup(
     return LambdaLR(optimizer, lr_lambda, last_epoch)
 
 
-def loss_func(Q, probs, offset):
+def loss_func(Q, probs, offset, stoich):
+    # NOTE: Adding unsqueeze to align with tensor.Transpose expectation of >1D
+    probs_ = torch.flatten(probs).unsqueeze(0)
+    loss = probs_ @ Q @ probs_.T + offset
 
-    probs_flattened = torch.flatten(probs)
-    p = torch.kron(probs_flattened, probs_flattened)
-    Q_flatten = torch.flatten(Q)
-    loss = torch.unsqueeze(p, 0)@torch.unsqueeze(Q_flatten, 1) + offset
+    # TODO - want to return to this; might help in larger problem instances?
+    # stoich_loss = 100*torch.sqrt(((probs.sum(axis=0) - stoich)**2).sum())
+    #
+    # loss += stoich_loss
+
     return loss
+
 
 def log_sinkhorn(log_alpha, r, n_iter,  eps = 0.05):
     """Performs incomplete Sinkhorn normalization to log_alpha.
@@ -220,6 +228,7 @@ def log_sinkhorn(log_alpha, r, n_iter,  eps = 0.05):
             print('Sinkhorn did not converge!')
     return alpha, i
 
+
 def sample_gumbel(shape, device='cpu', eps=1e-20):
     """Samples arbitrary-shaped standard gumbel variables.
     Args:
@@ -230,6 +239,7 @@ def sample_gumbel(shape, device='cpu', eps=1e-20):
     """
     u = torch.rand(shape, device=device)
     return -torch.log(-torch.log(u + eps) + eps)
+
 
 def gumbel_sinkhorn(log_alpha, stoich_const, tau, n_iter):
     """ Sample a permutation matrix from the Gumbel-Sinkhorn distribution
@@ -247,8 +257,10 @@ def gumbel_sinkhorn(log_alpha, stoich_const, tau, n_iter):
     sampled_perm_mat = log_sinkhorn((log_alpha + gumbel_noise)/tau, stoich_const, n_iter)
     return sampled_perm_mat
 
-def run_gnn_training(filename, Q, offset, stoich_const, Gumbel_sinkhorn, graph_dgl, cutoff_dist, net, embed, optimizer,
-                     lr_scheduler, temperature, scaling, number_epochs=int(1e5), patience=100, tolerance=1e-4,
+
+def run_gnn_training(filename, Q, offset, stoich_const, Gumbel_sinkhorn, graph_dgl,
+                     cutoff_dist, net, embed, optimizer, lr_scheduler, temperature,
+                     scaling, number_epochs=int(1e5), patience=100, tolerance=1e-4,
                      prob_threshold = 0.5, flag = False, seed=1):
     """
     Function to run model training for given graph, GNN, optimizer, and set of hypers.

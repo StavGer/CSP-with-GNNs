@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from dgl.nn.pytorch import SAGEConv, GraphConv, GATConv, GINConv
 
+
 # Define GNN GraphSage object
 class GNNSage(nn.Module):
     """
@@ -58,6 +59,7 @@ class GNNSage(nn.Module):
             h = layer(self.g, h)
 
         return h
+
 
 # Define GNN GraphSage object
 class GATnet(nn.Module):
@@ -118,6 +120,7 @@ class GATnet(nn.Module):
 
         return h
 
+
 class MLP(nn.Module):
     """Construct two-layer MLP-type aggreator for GIN model"""
 
@@ -171,8 +174,8 @@ class GIN(nn.Module):
             hidden_rep.append(h)
         h = F.relu(self.linear_prediction[0](h))
         h = self.drop(self.linear_prediction[1](h))
-        return h
 
+        return h
 
 
 # Define GNN GraphConv object
@@ -224,4 +227,5 @@ class GNNConv(nn.Module):
             if i != 0:
                 h = self.dropout(h)
             h = layer(self.g, h)
+
         return h

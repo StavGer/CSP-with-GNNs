@@ -6,7 +6,8 @@ import functools
 import argparse
 from pathlib import Path
 from hyperopt import tpe, hp, STATUS_OK, Trials
-from mltb.hyperopt import fmin
+# from mltb.hyperopt import fmin
+from hyperopt import fmin
 from hyperopt.pyll import scope
 from scipy.spatial.distance import pdist, squareform
 from time import time
@@ -61,10 +62,11 @@ eq_weight = 100  # penalty weight for stoichiometry constraints
 # Early stopping to allow NN to train to near-completion
 tol = 1e-3         # loss must change by more than tol, or trigger
 
-Gumbel_sinkhorn = True # if False Potts model, if True G.S. Potts
+Gumbel_sinkhorn = False # if False Potts model, if True G.S. Potts
 # Set up problem to solve
 bqm_model = BQM(Potts = True, Gumbel_sinkhorn=Gumbel_sinkhorn)
-file_to_parse = 'Y2Ti2O7G8.lp'
+# file_to_parse = 'Y2Ti2O7G8.lp'
+file_to_parse = 'SrTiO3G2.lp'
 struct_info = file_to_parse.split('G')
 struct_name = struct_info[0]
 g = int(struct_info[1][0])  # cell discretization
@@ -141,13 +143,13 @@ def model_step(hypers, Q, bqm_model, graph_dgl, torch_device, torch_dtype):
         gnn_hypers.update(opt_params)
         file_to_write = filename + "_"
         gnn_start = time()
-        probs, epoch, final_bitstring, best_bitstring, _ = run_gnn_training(file_to_write,
-            Q, bqm_model.offset, stoich_const, Gumbel_sinkhorn, graph_dgl, cutoff_dist, net, embed, optimizer,
-                                                                         lr_scheduler, hypers["temperature"],
-                                                                         hypers["scaling"],
-                                                                         hypers['number_epochs'], hypers['patience'],
-                                                                         hypers['tolerance'], hypers['prob_threshold'],
-                                                                         flag= False, seed=seed_value)
+        probs, epoch, final_bitstring, best_bitstring, _ = run_gnn_training(
+            file_to_write, Q, bqm_model.offset, stoich_const, Gumbel_sinkhorn,
+            graph_dgl, cutoff_dist, net, embed, optimizer, lr_scheduler,
+            hypers["temperature"], hypers["scaling"], hypers['number_epochs'],
+            hypers['patience'], hypers['tolerance'], hypers['prob_threshold'],
+            flag= False, seed=seed_value
+        )
 
         gnn_time = time() - gnn_start
         final_hard_loss = loss_func(Q, final_bitstring.float(), bqm_model.offset)
@@ -161,8 +163,12 @@ def model_step(hypers, Q, bqm_model, graph_dgl, torch_device, torch_dtype):
     avg_best_hard_loss = total_best_loss/num_seeds
     print(f'Average Final Hard loss: {avg_final_hard_loss}')
     print(f'Average Best Hard loss: {avg_best_hard_loss}')
-    return {'loss': avg_best_hard_loss, 'final_bitstring': final_bitstring, 'best_bitstring': best_bitstring,
-            'status': STATUS_OK}
+    return {
+        'loss': avg_best_hard_loss,
+        'final_bitstring': final_bitstring,
+        'best_bitstring': best_bitstring,
+        'status': STATUS_OK
+    }
 
 
 patience = 1000 if Gumbel_sinkhorn else 10000

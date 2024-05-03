@@ -42,7 +42,7 @@ def generate_graph(n, d=None, p=None, pos=None, cutoff_dist = None, graph_type='
         nx_temp = nx.complete_graph(n=n)
         distvec = pdist(pos)
         square_dist = squareform(distvec) # square distance matrix between positions
-        ind = np.where(square_dist>cutoff_dist) # find pairs of positions with distance > cutoff distance
+        ind = np.where(square_dist > cutoff_dist) # find pairs of positions with distance > cutoff distance
         A = nx.adjacency_matrix(nx_temp).todense()
         A[ind] = 0
         nx_temp = nx.from_numpy_matrix(A)
@@ -275,13 +275,3 @@ def get_filename(struct_name, graph_encoder, cutoff_dist, lr_scheduler):
     if cutoff_dist != 0:
         filename += '_' + 'cutoff_' + str(cutoff_dist)
     return filename
-
-
-
-
-
-
-
-
-
-
