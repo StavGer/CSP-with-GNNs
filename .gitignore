@@ -1,0 +1,8 @@
+# Precompiled python scripts
+__pycache__
+
+# Pycharm-specific
+.idea
+
+# MacOS stuff
+.DS_Store
