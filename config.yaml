@@ -1,0 +1,21 @@
+qubo:
+  eq_inf: 100
+  leq_inf: 100
+hypers:
+  bond_encoder_hidden: 338
+  bond_encoder_out: 249
+  dim_embedding: 509
+  hidden_channels: 103
+  lr: 0.006868757842121121
+  num_layers: 3
+  weight_decay: 0.012379073705453611
+  sink_it: 10000
+  temperature: 0.5
+  scaling: 1.1
+  prob_threshold: 0.5
+local_cutoff:
+  cell_param: 3.9
+  cutoff_radius: 4.0
+  cutoff_type: radius+k
+  graph_type: cutoff
+  max_local_nbr: 16
