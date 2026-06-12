@@ -1,7 +1,4 @@
 import torch
-from torch_geometric.data import Data
-import matplotlib.pyplot as plt
-import networkx as nx
 
 
 def S(a, b, n):
@@ -205,10 +202,10 @@ def add_affine_edges_for_all_planes(n):
                 for (n_x, ny, nz) in xy_neighbors + xz_neighbors + yz_neighbors:
                     neighbor = flatten_index(n_x, ny, nz, n)
                     if node != neighbor:
-                        # edge = tuple(sorted([node, neighbor]))
-                        # if edge not in edge_set:
-                            # edge_set.add(edge)
-                        edges.append([node, neighbor])
+                        edge = tuple([node, neighbor])
+                        if edge not in edge_set:
+                            edge_set.add(edge)
+                            edges.append([node, neighbor])
 
     edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
     
@@ -216,80 +213,3 @@ def add_affine_edges_for_all_planes(n):
     return edge_index
 
 
-
-# def S(a, b, n):
-#     return (a, (a + b) % n)
- 
-# def S_inv(a, b, n):
-#     return (a, (b - a) % n)
- 
-# def T(a, b, n):
-#     return ((a + b) % n, b)
- 
-# def T_inv(a, b, n):
-#     return ((b -a) % n, b)
- 
-# def flatten_index(x, y, z, n):
-#     """Flatten 3D coordinates (x, y, z) into a 1D index."""
-#     return x * n * n + y * n + z
- 
-# def add_edges_for_plane(plane, n, edges):
-#     """Add edges for a specific 2D plane (xy, xz, yz) to the edge list."""
-   
-#     if plane == 'xy':
-#         for x in range(n):
-#             for y in range(n):
-#                 for z in range(n):
-#                     node = flatten_index(x, y, z, n)  # 3D to 1D index
-#                     neighbors = [
-#                         (flatten_index((x + 1) % n, y, z, n)),
-#                         (flatten_index((x - 1) % n, y, z, n)),
-#                         (flatten_index(x, (y + 1) % n, z, n)),
-#                         (flatten_index(x, (y - 1) % n, z, n)),
-#                         flatten_index(*S(x, y, n), z, n),
-#                         flatten_index(*S_inv(x, y, n), z, n),
-#                         flatten_index(*T(x, y, n), z, n),
-#                         flatten_index(*T_inv(x, y, n), z, n)
-#                     ]
-#                     for neighbor in neighbors:
-#                         if [node,neighbor] not in edges:
-#                             edges.append([node, neighbor])
- 
-#     elif plane == 'xz':
-#         for x in range(n):
-#             for y in range(n):
-#                 for z in range(n):
-#                     node = flatten_index(x, y, z, n)  # 3D to 1D index
-#                     neighbors = [
-#                         (flatten_index((x + 1) % n, y, z, n)),
-#                         (flatten_index((x - 1) % n, y, z, n)),
-#                         (flatten_index(x, y, (z + 1) % n, n)),
-#                         (flatten_index(x, y, (z - 1) % n, n)),
-#                         flatten_index(*S(x, z, n), y, n),
-#                         flatten_index(*S_inv(x, z, n), y, n),
-#                         flatten_index(*T(x, z, n), y, n),
-#                         flatten_index(*T_inv(x, z, n), y, n)
-#                     ]
-#                     for neighbor in neighbors:
-#                         if [node,neighbor] not in edges:
-#                             edges.append([node, neighbor])
- 
-#     elif plane == 'yz':
-#         for x in range(n):
-#             for y in range(n):
-#                 for z in range(n):
-#                     node = flatten_index(x, y, z, n)  # 3D to 1D index
-#                     neighbors = [
-#                         (flatten_index(x, (y + 1) % n, z, n)),
-#                         (flatten_index(x, (y - 1) % n, z, n)),
-#                         (flatten_index(x, y, (z + 1) % n, n)),
-#                         (flatten_index(x, y, (z - 1) % n, n)),
-#                         flatten_index(x, *S(y, z, n), n),
-#                         flatten_index(x, *S_inv(y, z, n), n),
-#                         flatten_index(x, *T(y, z, n), n),
-#                         flatten_index(x, *T_inv(y, z, n), n)
-#                     ]
-#                     for neighbor in neighbors:
-#                         if [node,neighbor] not in edges:
-#                             edges.append([node, neighbor])
- 

@@ -1,0 +1,12 @@
+.DS_Store
+.idea
+__pycache__/
+.vscode/
+*.swo
+*.vasp
+*.txt
+*.iml
+*.png
+wandb/
+Q_stored/
+models/
