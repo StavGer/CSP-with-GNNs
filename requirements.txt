@@ -1,0 +1,4 @@
+scipy==1.13.1
+PyYAML==6.0.2
+torch-geometric==2.6.1
+pymatgen==2024.8.9

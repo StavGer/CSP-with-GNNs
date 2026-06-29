@@ -11,7 +11,7 @@ def gt_energy_lookup(problem_name):
     
     
     gt_energy = {'SrTiO3G4_1': -158.76, 'SrTiO3G8_1': -158.76, 'SrTiO3G8_2': -1268.67, 
-                 'SrTiO3G8_3': -4281.76, 'Y2O3G8_1': -2191.57, 'Y2TiO7G8_1': -3093.53,
+                 'SrTiO3G8_3': -4281.76, 'Y2O3G8_1': -2191.57, 'Y2Ti2O7G8_1': -3093.53,
                  'LiMgAlOG8_1': -1620.89, 'CaAlSiOG8_1': -2199.99}
 
     if problem_name not in gt_energy.keys():
