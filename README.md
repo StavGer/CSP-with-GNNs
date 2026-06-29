@@ -36,12 +36,12 @@ To run an experiment using GNT-CSP, do:
 python main.py --instance SrTiO3G8 --multiple 1 --graph-type Gabber-Galil --seed 0
 ```
 
-It will perform the structure search of SrTiO<sub>3</sub> with a discretization parameter $g=8$ and $\operatorname{multiple}=1$, whose pairwise interaction energies and stoichiometry are defined in file in `instances/SrTiO3G8_1.lp`.
+It will perform the structure search of SrTiO<sub>3</sub> with a discretization parameter `g=8` and `multiple=1`, whose pairwise interaction energies and stoichiometry are defined in file in `instances/SrTiO3G8_1.lp`.
 
 ### parameter explanation for GNT-CSP
 `--instance` refers to the composition for which we solve the combinatorial CSP (default is SrTiO<sub>3</sub>).\
 `--multiple` controls how many times the unit cell is repeated in each dimension (default is 1).\
-`--graph-type` refers to the graph construction used for message-passing, options are Gabber-Galil 3D (default), Margulis and local cutoff. \
+`--graph-type` refers to the graph construction used for message-passing, options are Gabber-Galil (default), Margulis and Cutoff. \
 `--seed` is used for reproducibility purposes.
 
 The `.lp` files of the compositions that we investigated in the paper can be found in `instances/`. The repo of [Integer Programming for crystal structure prediction][ipcsp] provides code to create additional `.lp` files of various compositions with different parameters (such as grid size and unit cell size) as well as a [Gurobi][gurobi] solver for CSP.
